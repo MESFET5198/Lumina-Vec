@@ -1,0 +1,13 @@
+services:
+  lumina-vec:
+    build: .
+    container_name: lumina-vec
+    restart: unless-stopped
+    ports:
+      - "8091:8080"
+    volumes:
+      - ./data:/data
+    environment:
+      - TZ=Asia/Shanghai
+    mem_limit: 8g
+    cpus: 6

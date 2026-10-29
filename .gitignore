@@ -4,3 +4,4 @@ out/
 samples/
 weights/*.pth
 *.svg.png
+data/
