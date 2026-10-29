@@ -11,7 +11,7 @@ await p.goto('file://'+svg);await p.screenshot({path:png});await b.close();})();
 
 
 def render(svg, png, w, h):
-    js = os.path.join(tempfile.gettempdir(), "aivec_render.js")
+    js = os.path.join(tempfile.gettempdir(), "lvec_render.js")
     open(js, "w").write(JS)
     # make the svg fill the viewport exactly
     s = open(svg).read()

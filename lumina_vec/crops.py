@@ -4,8 +4,8 @@ from PIL import Image, ImageDraw
 REGIONS = {"face": (700, 650, 1300, 1150), "eye": (1000, 830, 1250, 1000), "leg": (300, 2350, 1100, 2950),
            "stamp": (1420, 750, 1560, 1100), "hand": (1100, 1950, 1600, 2300), "lens": (600, 520, 1000, 780)}
 import os, json
-if os.environ.get("AIVEC_REGIONS"):
-    REGIONS = json.loads(os.environ["AIVEC_REGIONS"])
+if os.environ.get("LVEC_REGIONS"):
+    REGIONS = json.loads(os.environ["LVEC_REGIONS"])
 
 
 def main(out_prefix, orig, *pngs, labels=None):

@@ -6,3 +6,4 @@ vtracer==1.0.0a3 # pre-release: pip install --pre "vtracer==1.0.0a3"
 # evaluation only
 scikit-image
 playwright       # SVG rendering for evaluate.py (needs Node + `npx playwright install chromium`)
+scipy
