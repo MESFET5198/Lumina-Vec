@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+out/
+samples/
+weights/*.pth
+*.svg.png
