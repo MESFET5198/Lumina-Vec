@@ -36,6 +36,28 @@ PRESETS = {
 }
 
 
+GRAIN_THRESHOLD = 4.0          # mean |img - median3(img)| on native-resolution grey
+MAX_WORK_PX = {"shading": 14e6, "shading-detail": 6e6}
+
+
+def grain_level(img: Image.Image) -> float:
+    g = np.asarray(img.convert("L"))
+    return float(np.abs(g.astype(np.int16) - cv2.medianBlur(g, 3).astype(np.int16)).mean())
+
+
+def auto_params(img: Image.Image):
+    """Pick preset from measured grain, and shrink the working size of very large images.
+    Calibrated on 3 images: heavy-grain flat anime (8.8), painterly (1.9), clean cel (0.2)."""
+    grain = grain_level(img)
+    name = "shading" if grain >= GRAIN_THRESHOLD else "shading-detail"
+    params = dict(PRESETS[name])
+    W, H = img.size
+    cap = (MAX_WORK_PX[name] / (W * H)) ** 0.5
+    if params["work_scale"] > cap:
+        params["work_scale"] = round(max(0.25, cap), 2)
+    return name, grain, params
+
+
 def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_sp=8, ms_sr=14,
               filter_speckle=12, layer_difference=10, simplify=1.5, color_precision=6, ai=True,
               bands=0, vote_sigma=3.0, l_weight=1.3, c_weight=2.0, blur_sigma=12.0, edge_thr=0.4, detail_overlay=True):
@@ -72,20 +94,25 @@ def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_s
 def main():
     ap = argparse.ArgumentParser(description="AI-assisted raster -> SVG vectorizer")
     ap.add_argument("input"); ap.add_argument("output")
-    ap.add_argument("--preset", choices=PRESETS, default="illustration")
+    ap.add_argument("--preset", choices=["auto", *PRESETS], default="auto")
     ap.add_argument("--weights", default="weights/realesr-animevideov3.pth")
     ap.add_argument("--no-ai", action="store_true", help="skip the Real-ESRGAN clean step")
     ap.add_argument("--save-clean", default=None, help="also save the AI-cleaned raster here")
     for k, v in PRESETS["illustration"].items():
         ap.add_argument("--" + k.replace("_", "-"), type=type(v), default=None)
     a = ap.parse_args()
-    params = dict(PRESETS[a.preset])
+    src = Image.open(a.input)
+    if a.preset == "auto":
+        chosen, grain, params = auto_params(src)
+        print(json.dumps(dict(auto_preset=chosen, grain=round(grain, 2), work_scale=params["work_scale"])))
+    else:
+        params = dict(PRESETS[a.preset])
     for k in params:
         v = getattr(a, k)
         if v is not None:
             params[k] = v
     t = time.time()
-    svg, work = vectorize(Image.open(a.input), a.weights, ai=not a.no_ai, **params)
+    svg, work = vectorize(src, a.weights, ai=not a.no_ai, **params)
     open(a.output, "w").write(svg)
     if a.save_clean:
         work.save(a.save_clean)

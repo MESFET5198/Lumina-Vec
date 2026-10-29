@@ -59,12 +59,18 @@ pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install --pre "vtracer==1.0.0a3"
 ./scripts/download_weights.sh
 
-python -m lumina_vec.pipeline in.png out.svg --preset shading          # 平涂二次元，颗粒重（推荐）
-python -m lumina_vec.pipeline in.png out.svg --preset shading-detail   # 厚涂、细节多的插画
-python -m lumina_vec.pipeline in.png out.svg --preset shading-detail --work-scale 0.5   # 大图（4K 以上）提速
-python -m lumina_vec.pipeline in.png out.svg --preset shading --bands 48   # 减少颜色数
+python -m lumina_vec.pipeline in.png out.svg                 # 默认 auto：自动选预设、自动缩放大图（推荐）
+python -m lumina_vec.pipeline in.png out.svg --bands 48      # 减少颜色数（按打印需求选）
+python -m lumina_vec.pipeline in.png out.svg --preset shading          # 手动：平涂二次元，颗粒重
+python -m lumina_vec.pipeline in.png out.svg --preset shading-detail   # 手动：厚涂、细节多
 python -m lumina_vec.pipeline in.png out.svg --preset illustration     # 不分层：色块最少、文件最小
 ```
+
+**auto 模式的判断规则**
+- **颗粒程度**：原图灰度与其 3×3 中值滤波结果之间的平均差。≥ 4 时用 `shading`，否则用 `shading-detail`。三张测试图的值分别是：旗袍 8.8、狐耳 1.9、女仆 0.2。
+- **工作分辨率**：`shading` 的上限是 1400 万像素，`shading-detail` 的上限是 600 万像素，超过上限的图会自动缩小。
+- 选择结果会打印出来；单独指定的参数（例如 `--bands`、`--work-scale`）会覆盖 auto 的选择。
+- 阈值只用三张图标定过。遇到风格明显不同的图，自动选择未必合适，可以手动指定 `--preset`。
 
 主要参数：
 
