@@ -13,3 +13,15 @@ def srgb_to_oklab(rgb):
                    [0.0259040371, 0.7827717662, -0.8086757660]], np.float32)
     lms = np.cbrt(c @ M1.T)
     return lms @ M2.T
+
+
+def flat_sample(rgb_flat, n, power=0.4, seed=0):
+    """Sample pixels with probability ~ count(colour bin)^(power-1), so rare but distinct
+    hues (an iris, a highlight) are represented instead of drowned by large flat areas."""
+    rng = np.random.default_rng(seed)
+    q = rgb_flat.astype(np.int32) >> 2
+    key = (q[:, 0] << 12) | (q[:, 1] << 6) | q[:, 2]
+    _, inv, cnt = np.unique(key, return_inverse=True, return_counts=True)
+    p = cnt[inv].astype(np.float64) ** (power - 1.0)
+    p /= p.sum()
+    return rng.choice(len(rgb_flat), min(n, len(rgb_flat)), replace=False, p=p)
