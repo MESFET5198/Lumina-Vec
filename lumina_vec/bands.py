@@ -31,10 +31,14 @@ def fit_palette(rgb, k, sample=200_000, flatten=0.5, l_weight=1.3, c_weight=2.0,
 
 
 def assign(rgb, cen, l_weight=1.3, c_weight=2.0):
+    """Nearest palette entry per pixel. argmin ||x-c||^2 = argmin (||c||^2 - 2 x.c), done as one
+    float32 matmul per chunk instead of materialising an (N, k, 3) difference array."""
     lw = srgb_to_oklab(rgb).reshape(-1, 3).astype(np.float32) * _weights(l_weight, c_weight)
+    c = np.ascontiguousarray(cen, np.float32)
+    cn = (c * c).sum(1)
     labels = np.empty(len(lw), np.int32)
-    for s in range(0, len(lw), 400_000):
-        labels[s:s + 400_000] = ((lw[s:s + 400_000, None] - cen[None]) ** 2).sum(-1).argmin(1)
+    for s in range(0, len(lw), 1_000_000):
+        labels[s:s + 1_000_000] = (cn[None, :] - 2.0 * (lw[s:s + 1_000_000] @ c.T)).argmin(1)
     return labels.reshape(rgb.shape[:2])
 
 

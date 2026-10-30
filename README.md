@@ -66,6 +66,19 @@ python -m lumina_vec.pipeline in.png out.svg --preset shading-detail   # 手动�
 python -m lumina_vec.pipeline in.png out.svg --preset illustration     # 不分层：色块最少、文件最小
 ```
 
+**在两台机器上分工跑（AI 步骤放到 N 卡主机上）**
+
+```bash
+# GPU 主机：需要安装 CUDA 版 torch（pip install torch --index-url https://download.pytorch.org/whl/cu121）
+python -m lumina_vec.denoise in.png in_clean.png          # 有 CUDA 时自动使用 GPU + fp16
+# 主力机：跳过 AI 步骤，直接用 GPU 主机上处理好的结果
+python -m lumina_vec.pipeline in.png out.svg --clean in_clean.png
+```
+
+`--clean` 只替换 AI 去颗粒这一步。auto 模式仍然根据原图判断颗粒程度，所以第一个参数必须传原图。
+
+**各步骤耗时**（狐耳图，1600×2460，2 核云容器）：Real-ESRGAN 约 14 秒、均值漂移约 5 秒、明暗分层约 20 秒（之前约 70 秒，已优化）、vtracer 约 20 秒、细节补回约 2 秒，总计约 67 秒（之前约 124 秒）。
+
 **auto 模式的判断规则**
 - **颗粒程度**：原图灰度与其 3×3 中值滤波结果之间的平均差。≥ 4 时用 `shading`，否则用 `shading-detail`。三张测试图的值分别是：旗袍 8.8、狐耳 1.9、女仆 0.2。
 - **工作分辨率**：`shading` 的上限是 1400 万像素，`shading-detail` 的上限是 600 万像素，超过上限的图会自动缩小。

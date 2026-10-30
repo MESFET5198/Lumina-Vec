@@ -60,9 +60,12 @@ def auto_params(img: Image.Image):
 
 def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_sp=8, ms_sr=14,
               filter_speckle=12, layer_difference=10, simplify=1.5, color_precision=6, ai=True,
+              clean=None,
               bands=0, vote_sigma=3.0, l_weight=1.3, c_weight=2.0, blur_sigma=12.0, edge_thr=0.4, detail_overlay=True):
     W, H = img.size
-    if ai:
+    if clean is not None:   # AI step already done elsewhere (python -m lumina_vec.denoise)
+        work = clean.convert("RGB").resize((round(W * work_scale), round(H * work_scale)), Image.LANCZOS)
+    elif ai:
         from .denoise import ai_clean
         work = ai_clean(img, weights, pre_down=pre_down, out_scale=work_scale)
     else:
@@ -98,6 +101,8 @@ def main():
     ap.add_argument("--weights", default="weights/realesr-animevideov3.pth")
     ap.add_argument("--no-ai", action="store_true", help="skip the Real-ESRGAN clean step")
     ap.add_argument("--save-clean", default=None, help="also save the AI-cleaned raster here")
+    ap.add_argument("--clean", default=None,
+                    help="use an image already cleaned by `python -m lumina_vec.denoise` (skips the AI step)")
     for k, v in PRESETS["illustration"].items():
         ap.add_argument("--" + k.replace("_", "-"), type=type(v), default=None)
     a = ap.parse_args()
@@ -112,7 +117,8 @@ def main():
         if v is not None:
             params[k] = v
     t = time.time()
-    svg, work = vectorize(src, a.weights, ai=not a.no_ai, **params)
+    svg, work = vectorize(src, a.weights, ai=not a.no_ai,
+                          clean=Image.open(a.clean) if a.clean else None, **params)
     open(a.output, "w").write(svg)
     if a.save_clean:
         work.save(a.save_clean)
