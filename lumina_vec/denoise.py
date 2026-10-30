@@ -37,13 +37,14 @@ def load_model(path):
 
 
 @torch.no_grad()
-def sr4x(model, rgb, tile=256, pad=12):
+def sr4x(model, rgb, tile=256, pad=12, progress=None):
     if DEVICE == "cuda":
         tile = 512
     x = torch.from_numpy(rgb.astype(np.float32) / 255).permute(2, 0, 1)[None]
     dt = next(model.parameters()).dtype
     _, _, h, w = x.shape
     out = torch.zeros(1, 3, h * 4, w * 4)
+    n_tiles = -(-h // tile) * -(-w // tile); done = 0
     for y0 in range(0, h, tile):
         for x0 in range(0, w, tile):
             ya, xa = max(0, y0 - pad), max(0, x0 - pad)
@@ -52,16 +53,19 @@ def sr4x(model, rgb, tile=256, pad=12):
             ty, tx = (y0 - ya) * 4, (x0 - xa) * 4
             th, tw = (min(h, y0 + tile) - y0) * 4, (min(w, x0 + tile) - x0) * 4
             out[:, :, y0 * 4:y0 * 4 + th, x0 * 4:x0 * 4 + tw] = o[:, :, ty:ty + th, tx:tx + tw]
+            done += 1
+            if progress:
+                progress(done / n_tiles)
     return (out[0].permute(1, 2, 0).clamp(0, 1).numpy() * 255 + 0.5).astype(np.uint8)
 
 
-def ai_clean(img: Image.Image, weights, pre_down=2.0, out_scale=1.0):
+def ai_clean(img: Image.Image, weights, pre_down=2.0, out_scale=1.0, progress=None):
     """Return a de-grained image at out_scale x the input size."""
     torch.set_num_threads(max(1, torch.get_num_threads()))
     rgb = img.convert("RGB")
     W, H = rgb.size
     small = rgb.resize((round(W / pre_down), round(H / pre_down)), Image.BOX)
-    big = sr4x(load_model(weights), np.asarray(small))
+    big = sr4x(load_model(weights), np.asarray(small), progress=progress)
     return Image.fromarray(big).resize((round(W * out_scale), round(H * out_scale)), Image.LANCZOS)
 
 

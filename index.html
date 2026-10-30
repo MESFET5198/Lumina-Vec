@@ -260,8 +260,10 @@ function track(id, fresh) {
     let r; try { r = await fetch('/api/status/' + id).then(r => r.json()); } catch { return; }
     if (r.status === 'queued') progress(true, '排队中', null, r.ahead ? `前面还有 ${r.ahead} 个任务` : '即将开始');
     else if (r.status === 'running') {
-      const pct = est ? Math.min(95, r.elapsed / est * 100) : null;
-      progress(true, '转换中', pct, `已用 ${r.elapsed.toFixed(0)} 秒` + (est ? ` · 预计约 ${Math.round(est)} 秒` : ''));
+      const pct = r.progress != null ? r.progress * 100 : (est ? Math.min(95, r.elapsed / est * 100) : null);
+      let eta = '';
+      if (r.progress > 0.08) { const left = r.elapsed / r.progress - r.elapsed; eta = ` · 预计还需约 ${Math.max(1, Math.round(left))} 秒`; }
+      progress(true, r.stage || '转换中', pct, `${pct != null ? Math.round(pct) + '% · ' : ''}已用 ${r.elapsed.toFixed(0)} 秒${eta}`);
     } else if (r.status === 'done') {
       clearInterval(poll); progress(false); $('#go').disabled = !file;
       if (fresh) learn(r);

@@ -129,24 +129,30 @@ def merge_specks(labels, rgb, max_area=48, keep_de=0.10, iters=2):
 
 
 def posterize(rgb, k=112, vote_sigma=1.0, l_weight=1.3, c_weight=2.0, edge_thr=0.4,
-              blur_sigma=0.0, smooth_src=None, speck_area=48, speck_keep_de=0.10, k_detail=48, **_):
+              blur_sigma=0.0, smooth_src=None, speck_area=48, speck_keep_de=0.10, k_detail=48, progress=None, **_):
     """Return (posterised rgb, palette hex list).
     blur_sigma>0: low-contrast pixels are labelled from a Gaussian-blurred copy (smooth
     contours); vote only among low-contrast pixels so bands don't eat lines."""
+    step = progress or (lambda *_: None)
+    step(0.0, "调色板")
     edges = edge_strength(rgb) > edge_thr if edge_thr else np.zeros(rgb.shape[:2], bool)
     cen = fit_palette(rgb, k, l_weight=l_weight, c_weight=c_weight)
     if k_detail and edges.any():
         # dedicated colours for high-contrast pixels: a tiny mouth or nose line otherwise has no
         # palette entry of its own and snaps to the surrounding skin tone
         cen = np.concatenate([cen, fit_palette(rgb, k_detail, l_weight=l_weight, c_weight=c_weight, mask=edges)])
+    step(0.2, "分配颜色")
     raw = assign(rgb, cen, l_weight, c_weight)
+    step(0.35, "平滑色带")
     if blur_sigma > 0:
         src = rgb if smooth_src is None else smooth_src
         low = ~edges
         smooth = assign(adaptive_blur(src, low, blur_sigma), cen, l_weight, c_weight)
+        step(0.6, "空间投票")
         labels = np.where(low, soft_vote(np.where(low, smooth, raw), vote_sigma, low), raw)
     else:
         labels = np.where(edges, raw, soft_vote(raw, vote_sigma))
+    step(0.85, "清理碎块")
     if speck_area:
         labels = merge_specks(labels, rgb, max_area=speck_area, keep_de=speck_keep_de)
     # palette colour = median of the source pixels in each final label

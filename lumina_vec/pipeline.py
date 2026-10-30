@@ -61,17 +61,41 @@ def auto_params(img: Image.Image):
 def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_sp=8, ms_sr=14,
               filter_speckle=12, layer_difference=10, simplify=1.5, color_precision=6, ai=True,
               clean=None,
-              bands=0, vote_sigma=3.0, l_weight=1.3, c_weight=2.0, blur_sigma=12.0, edge_thr=0.4, detail_overlay=True, ink=False):
+              bands=0, vote_sigma=3.0, l_weight=1.3, c_weight=2.0, blur_sigma=12.0, edge_thr=0.4, detail_overlay=True, ink=False, progress=None):
     W, H = img.size
+    # stage cost model (seconds per megapixel, CPU), calibrated on two test images; the AI step
+    # scales with its (downscaled) input, everything else with the working resolution
+    mp_in = W * H / pre_down ** 2 / 1e6
+    mp_w = W * H * work_scale ** 2 / 1e6
+    stages = [("ai", "AI 去颗粒", 12.5 * mp_in if (ai and clean is None) else 0.2),
+              ("flat", "压平", 1.0 * mp_w),
+              ("ink", "轮廓线层", 1.0 * mp_w if (bands and ink) else 0),
+              ("bands", "明暗分层", 6.4 * mp_w if bands else 0),
+              ("trace", "矢量描摹", 2.5 * mp_w),
+              ("detail", "细节补回", 0.4 * mp_w if (bands and detail_overlay) else 0.05)]
+    total = sum(w for *_, w in stages)
+    start, acc = {}, 0.0
+    for key, _, wgt in stages:
+        start[key] = acc / total; acc += wgt
+    names = {k: n for k, n, _ in stages}; weight = {k: w / total for k, _, w in stages}
+
+    def report(key, frac=0.0, sub=None):
+        if progress:
+            label = names[key] + (f" · {sub}" if sub else "")
+            progress(min(1.0, start[key] + weight[key] * frac), label)
+
+    report("ai")
     if clean is not None:   # AI step already done elsewhere (python -m lumina_vec.denoise)
         work = clean.convert("RGB").resize((round(W * work_scale), round(H * work_scale)), Image.LANCZOS)
     elif ai:
         from .denoise import ai_clean
-        work = ai_clean(img, weights, pre_down=pre_down, out_scale=work_scale)
+        work = ai_clean(img, weights, pre_down=pre_down, out_scale=work_scale,
+                        progress=lambda f: report("ai", f, f"{f * 100:.0f}%"))
     else:
         work = img.convert("RGB").resize((round(W * work_scale), round(H * work_scale)), Image.LANCZOS)
     rgb = np.asarray(work.convert("RGB"))
     clean = rgb
+    report("flat")
     if ms_sp > 0:
         rgb = cv2.pyrMeanShiftFiltering(rgb, ms_sp, ms_sr)
     h, w = rgb.shape[:2]
@@ -79,6 +103,7 @@ def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_s
     ink_paths = []
     if bands and ink:
         from .ink import ink_mask, fill_under, trace_ink
+        report("ink")
         im = ink_mask(clean)
         ink_paths = trace_ink(clean, im)
         rgb, clean = fill_under(rgb, im), fill_under(clean, im)
@@ -86,17 +111,21 @@ def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_s
         from .bands import posterize
         # contours come from the (pre-mean-shift) cleaned image: mean-shift plateaus are blocky
         rgb, palette = posterize(rgb, k=bands, vote_sigma=vote_sigma, l_weight=l_weight, c_weight=c_weight,
-                                 edge_thr=edge_thr, blur_sigma=blur_sigma, smooth_src=clean)
+                                 edge_thr=edge_thr, blur_sigma=blur_sigma, smooth_src=clean,
+                                 progress=lambda f, s: report("bands", f, s))
         color_precision, layer_difference = 8, 1   # keep every band as its own layer
+    report("trace", 0.0, "这一步无法细分，请稍候")
     cfg = vtracer.Config(filter_speckle=filter_speckle, layer_difference=layer_difference,
                          color_precision=color_precision, simplify=simplify, palette=palette)
     svg = cfg.convert_pixels(np.dstack([rgb, np.full((h, w), 255, np.uint8)]).tobytes(), w, h)
+    report("detail")
     if bands and detail_overlay:
         from .overlay import trace_details
         extra = trace_details(rgb)
         svg = svg.replace("</svg>", "\n".join(extra) + "\n</svg>")
     if ink_paths:
         svg = svg.replace("</svg>", "\n".join(ink_paths) + "\n</svg>")
+    report("detail", 1.0)
     svg = re.sub(r"<svg\b([^>]*)>", lambda m: "<svg" + re.sub(r'\s(width|height)="[^"]*"', "", m.group(1))
                  + f' width="{W}" height="{H}" viewBox="0 0 {w} {h}">', svg, count=1)
     return svg, work

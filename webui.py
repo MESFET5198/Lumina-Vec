@@ -43,13 +43,16 @@ def work(job, raw, preset, overrides):
                 name, grain, params = preset, grain_level(im), dict(PRESETS[preset])
             params.update(overrides)
             t = time.monotonic()
-            svg, _ = vectorize(im, str(WEIGHTS), ai=True, **params)
+            def prog(frac, label):           # pipeline = 0-92 %, PNG preview render = last 8 %
+                _set(job, progress=round(frac * 0.92, 4), stage=label)
+            svg, _ = vectorize(im, str(WEIGHTS), ai=True, progress=prog, **params)
+            _set(job, progress=0.93, stage='生成 PNG 预览')
             secs = time.monotonic() - t
             svgpath = OUT / f'{job}.svg'; pngpath = OUT / f'{job}.png'
             svgpath.write_text(svg, encoding='utf8')
             cairosvg.svg2png(bytestring=svg.encode(), write_to=str(pngpath), output_width=w, output_height=h)
             colors = len(set(m.lower() for m in re.findall(r'fill="(#[0-9a-fA-F]{6})"', svg)))
-            _set(job, status='done', svg=f'/file/{job}.svg', png=f'/file/{job}.png', width=w, height=h,
+            _set(job, status='done', progress=1.0, stage='完成', svg=f'/file/{job}.svg', png=f'/file/{job}.png', width=w, height=h,
                  paths=svg.count('<path'), colors=colors, bytes=svgpath.stat().st_size,
                  seconds=round(secs, 1), preset=name, grain=round(grain, 2), params=params, finished=time.time())
     except Exception as e:
