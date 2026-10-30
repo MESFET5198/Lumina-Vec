@@ -27,7 +27,7 @@ def fill_under(rgb, mask):
     return rgb[iy, ix]
 
 
-def trace_ink(rgb, mask, sigma=1.0, simplify=1.0, ss=2):
+def trace_ink(rgb, mask, sigma=1.4, simplify=1.0, ss=2, color=None):
     """Supersample the mask, blur, threshold at 0.5 -> sub-pixel smooth edges; trace; scale back."""
     if not mask.any():
         return []
@@ -38,7 +38,7 @@ def trace_ink(rgb, mask, sigma=1.0, simplify=1.0, ss=2):
     h, w = img.shape
     svg = vtracer.Config(clustering="bw", filter_speckle=4 * ss, simplify=simplify * ss, mode="spline") \
         .convert_pixels(np.dstack([img, img, img, np.full((h, w), 255, np.uint8)]).tobytes(), w, h)
-    col = "#%02x%02x%02x" % tuple(int(v) for v in np.median(rgb[mask], 0))
+    col = "#%02x%02x%02x" % tuple(int(v) for v in (np.median(rgb[mask], 0) if color is None else color))
     out = []
     for p in re.findall(r"<path\b[^>]*/>", svg):
         if re.search(r'fill="#(fff|ffffff)"', p, re.I):
@@ -50,4 +50,37 @@ def trace_ink(rgb, mask, sigma=1.0, simplify=1.0, ss=2):
         else:
             p = p.replace("<path", f'<path transform="scale({1/ss})"', 1)
         out.append(p)
+    return out
+
+
+def trace_ink_colored(rgb, mask, merge_de=0.06, max_colors=12, **kw):
+    """Each stroke keeps its own colour (brown hair lines, red mouth...). Stroke colours closer than
+    merge_de (OKLab) are merged greedily, so similar lines share a filament but an orange strand
+    is never forced to dark red."""
+    if not mask.any():
+        return []
+    from .color import srgb_to_oklab
+    n, cc = cv2.connectedComponents(mask.astype(np.uint8), connectivity=8)
+    flat_c, flat_px = cc.ravel(), rgb.reshape(-1, 3)
+    order = np.argsort(flat_c, kind="stable"); sc = flat_c[order]; sp = flat_px[order]
+    bnd = np.searchsorted(sc, np.arange(n + 1))
+    cols = np.array([np.median(sp[bnd[i]:bnd[i + 1]], 0) for i in range(1, n)], np.float32)
+    area = np.diff(bnd)[1:]
+    lab = srgb_to_oklab(cols[None].astype(np.uint8))[0]
+    centers, members = [], []
+    for i in np.argsort(-area):                      # big strokes define the line palette first
+        if centers:
+            d = np.sqrt(((np.array(centers) - lab[i]) ** 2).sum(1))
+            j = int(d.argmin())
+            if d[j] < merge_de or len(centers) >= max_colors:
+                members[j].append(i); continue
+        centers.append(lab[i]); members.append([i])
+    grp = np.full(n, -1); 
+    for g, ms in enumerate(members):
+        grp[np.array(ms) + 1] = g
+    gmap = grp[cc]
+    out = []
+    for g in range(len(members)):
+        m = gmap == g
+        out += trace_ink(rgb, m, color=np.median(rgb[m], 0), **kw)
     return out

@@ -7,7 +7,7 @@ flat region whatever the threshold. Here we quantise explicitly first:
      boundaries follow smooth iso-contours (printable curves, no staircase)
   -> high-contrast pixels (lines, texture, eye highlights): raw per-pixel labels.
 """
-import numpy as np, cv2
+import math, numpy as np, cv2
 from .color import srgb_to_oklab, flat_sample
 
 
@@ -128,8 +128,26 @@ def merge_specks(labels, rgb, max_area=48, keep_de=0.10, iters=2):
     return labels
 
 
+def printable_labels(labels, min_px):
+    """Remove parts of colour regions narrower than min_px (a 0.42 mm extrusion can't lay them
+    down) and reassign those pixels to the nearest surviving region."""
+    from scipy import ndimage as ndi
+    d = int(math.ceil(min_px))
+    if d < 2:
+        return labels
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (d, d))
+    keep = np.zeros(labels.shape, bool)
+    for c in np.unique(labels):
+        m = (labels == c).astype(np.uint8)
+        keep |= cv2.morphologyEx(m, cv2.MORPH_OPEN, k) > 0
+    if keep.all():
+        return labels
+    _, (iy, ix) = ndi.distance_transform_edt(~keep, return_indices=True)
+    return labels[iy, ix]
+
+
 def posterize(rgb, k=112, vote_sigma=1.0, l_weight=1.3, c_weight=2.0, edge_thr=0.4,
-              blur_sigma=0.0, smooth_src=None, speck_area=48, speck_keep_de=0.10, k_detail=48, progress=None, **_):
+              blur_sigma=0.0, smooth_src=None, speck_area=48, speck_keep_de=0.10, k_detail=48, progress=None, min_px=0, **_):
     """Return (posterised rgb, palette hex list).
     blur_sigma>0: low-contrast pixels are labelled from a Gaussian-blurred copy (smooth
     contours); vote only among low-contrast pixels so bands don't eat lines."""
@@ -155,6 +173,9 @@ def posterize(rgb, k=112, vote_sigma=1.0, l_weight=1.3, c_weight=2.0, edge_thr=0
     step(0.85, "清理碎块")
     if speck_area:
         labels = merge_specks(labels, rgb, max_area=speck_area, keep_de=speck_keep_de)
+    if min_px:
+        step(0.92, "可打印性")
+        labels = printable_labels(labels, min_px)
     # palette colour = median of the source pixels in each final label
     used = np.unique(labels)
     flat_l, flat_s = labels.ravel(), rgb.reshape(-1, 3)

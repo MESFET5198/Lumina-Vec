@@ -8,7 +8,7 @@ from skimage.measure import label as cc_label
 from .color import srgb_to_oklab
 
 
-def find_details(post, max_area=400, min_area=6, min_de=0.10, bg_size=15):
+def find_details(post, max_area=400, min_area=6, min_de=0.10, bg_size=15, min_px=0):
     """Small blobs that contrast with the local background (median filter). Anti-aliased lines
     are split over many palette colours, so detect on contrast, then fill each blob with one
     colour (the median of its most contrasting half)."""
@@ -29,6 +29,17 @@ def find_details(post, max_area=400, min_area=6, min_de=0.10, bg_size=15):
         m = reg[ys, xs] == r
         d = de[ys, xs][m]
         px = post[ys, xs][m][d >= np.median(d)]
+        if min_px:
+            if m.sum() < 0.6 * min_px * min_px:     # smaller than one extrusion dot: unprintable
+                continue
+            from .lines import enforce_min_width
+            m = np.pad(m, int(min_px)); ys = slice(ys.start - int(min_px), ys.stop + int(min_px))
+            xs = slice(xs.start - int(min_px), xs.stop + int(min_px))
+            m = enforce_min_width(m, min_px)
+            if ys.start < 0 or xs.start < 0 or ys.stop > H or xs.stop > W:   # keep it simple at borders
+                cy0, cx0 = max(0, -ys.start), max(0, -xs.start)
+                ys = slice(max(0, ys.start), min(H, ys.stop)); xs = slice(max(0, xs.start), min(W, xs.stop))
+                m = m[cy0:cy0 + (ys.stop - ys.start), cx0:cx0 + (xs.stop - xs.start)]
         out.append((ys, xs, m, np.median(px, 0)))
     return out
 
