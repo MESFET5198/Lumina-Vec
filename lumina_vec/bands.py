@@ -128,7 +128,7 @@ def merge_specks(labels, rgb, max_area=48, keep_de=0.10, iters=2):
     return labels
 
 
-def printable_labels(labels, min_px, rgb=None, distinct_de=0.07, narrow_frac=0.5):
+def printable_labels(labels, min_px, rgb=None, distinct_de=0.07, narrow_frac=0.5, group_de=0.05):
     """Print mode: decide per WHOLE colour region, not per pixel (per-pixel decisions chopped one
     line into printable/unprintable pieces -> dotted lines).
       - mostly-wide region: keep its wide part, slivers go to neighbours (as before);
@@ -149,7 +149,27 @@ def printable_labels(labels, min_px, rgb=None, distinct_de=0.07, narrow_frac=0.5
     if keep.all():
         return labels
     lab = srgb_to_oklab(rgb) if rgb is not None else None
-    reg = cc_label(labels + 1, connectivity=1, background=0)
+    # group palette entries whose colours are close (a red edge that posterize split into
+    # several slightly different reds), so a line is judged - and coloured - as one piece
+    grp_of = np.arange(labels.max() + 1)
+    if lab is not None:
+        n_lab = labels.max() + 1
+        flat = labels.ravel(); cnt = np.bincount(flat, minlength=n_lab).astype(np.float64)
+        cen = np.stack([np.bincount(flat, lab.reshape(-1, 3)[:, i], minlength=n_lab) for i in range(3)], 1) \
+            / np.maximum(cnt, 1)[:, None]
+        used = np.flatnonzero(cnt)
+        parent = {int(u): int(u) for u in used}
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]; x = parent[x]
+            return x
+        dmat = np.sqrt(((cen[used, None] - cen[None, used]) ** 2).sum(-1))
+        for i, j in zip(*np.nonzero(np.triu(dmat < group_de, 1))):
+            parent[find(int(used[i]))] = find(int(used[j]))
+        for u in used:
+            grp_of[u] = find(int(u))
+    groups = grp_of[labels]
+    reg = cc_label(groups + 1, connectivity=1, background=0)
     area = np.bincount(reg.ravel()); kept = np.bincount(reg.ravel(), weights=keep.ravel())
     H, W = labels.shape
     lines = np.zeros(labels.shape, bool)
@@ -179,8 +199,15 @@ def printable_labels(labels, min_px, rgb=None, distinct_de=0.07, narrow_frac=0.5
         grown = cv2.dilate(lines.astype(np.uint8), cv2.getStructuringElement(
             cv2.MORPH_ELLIPSE, (d // 2 * 2 + 1,) * 2)) > 0
         grown &= ~(keep & ~drop & (cv2.dilate(lines.astype(np.uint8), np.ones((3, 3), np.uint8)) == 0))
+        lreg = np.where(lines, reg, 0)
+        n = reg.max() + 1
+        pairs = lreg[lines].astype(np.int64) * (labels.max() + 1) + labels[lines]
+        u, c = np.unique(pairs, return_counts=True)
+        comp, lb = u // (labels.max() + 1), u % (labels.max() + 1)
+        order = np.lexsort((-c, comp)); first = np.r_[True, comp[order][1:] != comp[order][:-1]]
+        line_label = np.zeros(n, labels.dtype); line_label[comp[order][first]] = lb[order][first]
         _, (sy, sx) = ndi.distance_transform_edt(~lines, return_indices=True)
-        out = np.where(grown, labels[sy, sx], out)
+        out = np.where(grown, line_label[lreg[sy, sx]], out)
     return out
 
 
