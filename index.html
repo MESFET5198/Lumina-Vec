@@ -162,9 +162,14 @@ input[type=range]{width:100%;accent-color:var(--accent)}
           <div class="hint">0 = 跟随预设（112）。数量越少，叠色打印的区域越少、越不碎。</div>
         </div>
         <div class="field">
-          <label>轮廓线平滑层</label>
+          <label>AI 线条模型</label>
+          <div class="seg" id="lines"><button data-v="" class="on">开</button><button data-v="none">关</button></div>
+          <div class="hint">用 AI 识别线条并重绘成平滑、粗细均匀的线。关闭则按颜色规则找线（更快）。</div>
+        </div>
+        <div class="field">
+          <label>线条层</label>
           <div class="seg" id="ink"><button data-v="" class="on">自动</button><button data-v="1">开</button><button data-v="0">关</button></div>
-          <div class="hint">自动：仅颗粒重的图开启。线条有锯齿时打开，细线被吃掉时关闭。</div>
+          <div class="hint">自动：按预设（Shading / Shading Detail / Cel 默认开启）。</div>
         </div>
       </details>
     </div>
@@ -206,14 +211,15 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 <script>
 const $ = s => document.querySelector(s);
 const PRESETS = [
-  ['auto','自动','按颗粒程度和尺寸自动选择',true],
-  ['shading','Shading','平涂二次元，颗粒重；含明暗分层和轮廓平滑'],
-  ['shading-detail','Shading Detail','厚涂、纹理多或干净的赛璐璐'],
+  ['auto','自动','按颗粒程度、是否平涂、尺寸自动选择',true],
+  ['shading','Shading','颗粒重的图；明暗分层 + AI 线条'],
+  ['shading-detail','Shading Detail','有明暗渐变的插画、厚涂；明暗分层 + AI 线条'],
+  ['cel','Cel 平涂','干净的平涂赛璐璐；硬边色块、无晕边、碎块最少'],
   ['illustration','Illustration','不分层，色块最少、文件最小'],
   ['detail','Detail','不分层，保留更多细节'],
   ['flat','Flat','更少更大的色块，会丢细笔画'],
 ];
-let file = null, preset = 'auto', ink = '', job = null, poll = null, srcURL = null;
+let file = null, preset = 'auto', ink = '', lines = '', job = null, poll = null, srcURL = null;
 
 // ---------- presets & options
 $('#presets').innerHTML = PRESETS.map(([v,t,d,rec]) =>
@@ -222,6 +228,8 @@ $('#presets').innerHTML = PRESETS.map(([v,t,d,rec]) =>
 $('#presets').onchange = e => { preset = e.target.value;
   document.querySelectorAll('.preset').forEach(p => p.classList.toggle('sel', p.querySelector('input').checked)); };
 $('#bands').oninput = e => $('#bandsOut').textContent = +e.target.value ? e.target.value + ' 色' : '预设默认';
+$('#lines').onclick = e => { const b = e.target.closest('button'); if (!b) return; lines = b.dataset.v;
+  $('#lines').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); };
 $('#ink').onclick = e => { const b = e.target.closest('button'); if (!b) return; ink = b.dataset.v;
   $('#ink').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); };
 
@@ -255,6 +263,7 @@ $('#go').onclick = () => {
   const fd = new FormData(); fd.append('image', file); fd.append('preset', preset);
   if (+$('#bands').value) fd.append('bands', $('#bands').value);
   if (ink) fd.append('ink', ink);
+  if (lines) fd.append('lines', lines);
   if (+$('#printMm').value) { fd.append('print_mm', $('#printMm').value); fd.append('line_mm', $('#lineMm').value || '0.42'); }
   try { localStorage.setItem('lvec.print', JSON.stringify([$('#printMm').value, $('#lineMm').value])); } catch {}
   $('#go').disabled = true; showErr(''); $('#result').classList.remove('show');
@@ -310,7 +319,7 @@ function showResult(id, r) {
     ['颜色', r.colors], ['路径', (r.paths || 0).toLocaleString()],
     ['SVG', fmtBytes(r.bytes)], ['耗时', r.seconds + ' 秒'],
   ];
-  if (p.ink) stats.splice(4, 0, ['轮廓层', '开']);
+  if (p.ink) stats.splice(4, 0, ['线条', p.lines === null ? '颜色规则' : 'AI']);
   if (p.print_mm) stats.splice(1, 0, ['打印', `${p.print_mm} mm · 线宽 ${p.line_mm}`]);
   $('#stats').innerHTML = stats.map(([k, v]) => `<div class="stat"><small>${k}</small><b>${v ?? '–'}</b></div>`).join('');
   $('#dlSvg').href = r.svg + '?download=1'; $('#dlPng').href = r.png + '?download=1';

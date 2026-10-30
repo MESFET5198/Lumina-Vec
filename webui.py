@@ -88,6 +88,8 @@ def process():
         overrides.update(print_mm=pmm, line_mm=lmm)
         if 'bands' not in overrides:
             overrides['bands'] = 56
+    if request.form.get('lines', '').strip() == 'none':
+        overrides['lines'] = None
     ink = request.form.get('ink', '').strip()
     if ink in ('0', '1'):
         overrides['ink'] = ink == '1'
