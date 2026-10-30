@@ -128,14 +128,17 @@ def merge_specks(labels, rgb, max_area=48, keep_de=0.10, iters=2):
     return labels
 
 
-def printable_labels(labels, min_px, rgb=None, line_de=0.06):
-    """Print mode: parts of a colour region narrower than one extrusion line (min_px) can't be
-    laid down; they only make the slicer emit tiny islands + retractions.
-    - drawn lines (narrow AND darker than their surroundings: mouth, nose, hair strands) are
-      thickened to min_px and kept, each stroke uniformly so it stays even;
-    - every other narrow piece (anti-alias fringes, specks, slivers between bands) is handed to
-      the nearest surviving region, so the image stays fully covered (no holes in any layer)."""
+def printable_labels(labels, min_px, rgb=None, distinct_de=0.07, narrow_frac=0.5):
+    """Print mode: decide per WHOLE colour region, not per pixel (per-pixel decisions chopped one
+    line into printable/unprintable pieces -> dotted lines).
+      - mostly-wide region: keep its wide part, slivers go to neighbours (as before);
+      - mostly-narrow region (a line): if its colour is distinct from the colours on BOTH sides
+        (a real line: outline, hair strand, chromatic-aberration edge) keep the whole region and
+        thicken it to min_px; if it is close to one side (an anti-alias blend between two fills)
+        drop the whole region into its neighbours.
+    The image stays fully covered (no holes in any layer)."""
     from scipy import ndimage as ndi
+    from skimage.measure import label as cc_label
     d = int(math.ceil(min_px))
     if d < 2:
         return labels
@@ -143,44 +146,42 @@ def printable_labels(labels, min_px, rgb=None, line_de=0.06):
     keep = np.zeros(labels.shape, bool)
     for c in np.unique(labels):
         keep |= cv2.morphologyEx((labels == c).astype(np.uint8), cv2.MORPH_OPEN, k) > 0
+    if keep.all():
+        return labels
+    lab = srgb_to_oklab(rgb) if rgb is not None else None
+    reg = cc_label(labels + 1, connectivity=1, background=0)
+    area = np.bincount(reg.ravel()); kept = np.bincount(reg.ravel(), weights=keep.ravel())
+    H, W = labels.shape
+    lines = np.zeros(labels.shape, bool)
+    drop = ~keep
+    for r, sl in enumerate(ndi.find_objects(reg), start=1):
+        if sl is None or kept[r] >= narrow_frac * area[r]:
+            continue                                   # mostly wide: per-pixel rule is fine
+        ys = slice(max(0, sl[0].start - 2), min(H, sl[0].stop + 2))
+        xs = slice(max(0, sl[1].start - 2), min(W, sl[1].stop + 2))
+        m = reg[ys, xs] == r
+        drop[ys, xs] |= m                              # default: whole region goes
+        if lab is None or area[r] < 2 * d * d:
+            continue
+        ring = ndi.binary_dilation(m, iterations=2) & ~m
+        if not ring.any():
+            continue
+        own = np.median(lab[ys, xs][m], 0)
+        dist = np.sqrt(((lab[ys, xs][ring] - own) ** 2).sum(1))
+        if np.quantile(dist, 0.15) >= distinct_de:     # distinct from every side -> a line
+            lines[ys, xs] |= m
     out = labels
-    if not keep.all():
-        _, (iy, ix) = ndi.distance_transform_edt(~keep, return_indices=True)
+    gone = drop & ~lines
+    if gone.any():
+        _, (iy, ix) = ndi.distance_transform_edt(gone, return_indices=True)
         out = labels[iy, ix]
-    if rgb is None:
-        return out
-    # --- rescue drawn lines
-    L = srgb_to_oklab(rgb)[..., 0].astype(np.float32)
-    med = cv2.medianBlur(np.clip(L * 255, 0, 255).astype(np.uint8), 2 * d + 7).astype(np.float32) / 255
-    strokes = (~keep) & ((med - L) > line_de)
-    n, cc, st, _ = cv2.connectedComponentsWithStats(strokes.astype(np.uint8), connectivity=8)
-    if n <= 1:
-        return out
-    from skimage.morphology import skeletonize
-    big = np.zeros(n, bool); big[1:] = st[1:, cv2.CC_STAT_AREA] >= max(4, d)   # drop pure specks
-    strokes = big[cc]
-    if not strokes.any():
-        return out
-    skel = skeletonize(strokes)
-    cc = np.where(strokes, cc, 0)
-    area = np.bincount(cc.ravel(), minlength=n).astype(np.float64)
-    slen = np.bincount(cc[skel], minlength=n).astype(np.float64)
-    width = area / np.maximum(slen, 1)
-    grown = strokes.copy()
-    for r in range(1, d // 2 + 2):
-        sel = np.zeros(n, bool); sel[1:] = big[1:] & (np.ceil((min_px - width[1:]) / 2) == r)
-        if sel.any():
-            grown |= cv2.dilate(sel[cc].astype(np.uint8),
-                                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))) > 0
-    # one colour per stroke (its most common label) so a line isn't chopped into tiny
-    # differently-coloured pieces; grown pixels belong to the nearest stroke
-    pairs = cc[strokes].astype(np.int64) * (labels.max() + 1) + labels[strokes]
-    u, c = np.unique(pairs, return_counts=True)
-    comp, lab = u // (labels.max() + 1), u % (labels.max() + 1)
-    order = np.lexsort((-c, comp)); first = np.r_[True, comp[order][1:] != comp[order][:-1]]
-    stroke_label = np.zeros(n, labels.dtype); stroke_label[comp[order][first]] = lab[order][first]
-    _, (sy, sx) = ndi.distance_transform_edt(~strokes, return_indices=True)
-    return np.where(grown, stroke_label[cc[sy, sx]], out)
+    if lines.any():                                    # thicken whole lines uniformly
+        grown = cv2.dilate(lines.astype(np.uint8), cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (d // 2 * 2 + 1,) * 2)) > 0
+        grown &= ~(keep & ~drop & (cv2.dilate(lines.astype(np.uint8), np.ones((3, 3), np.uint8)) == 0))
+        _, (sy, sx) = ndi.distance_transform_edt(~lines, return_indices=True)
+        out = np.where(grown, labels[sy, sx], out)
+    return out
 
 
 def posterize(rgb, k=112, vote_sigma=1.0, l_weight=1.3, c_weight=2.0, edge_thr=0.4,
