@@ -77,6 +77,17 @@ def process():
         if not bands.isdigit() or not (8 <= int(bands) <= 256):
             return jsonify(error='颜色数需在 8–256 之间'), 400
         overrides['bands'] = int(bands)
+    pmm = request.form.get('print_mm', '').strip()
+    if pmm:
+        try:
+            pmm = float(pmm); lmm = float(request.form.get('line_mm', '0.42') or 0.42)
+        except ValueError:
+            return jsonify(error='打印尺寸或线宽格式不对'), 400
+        if not (20 <= pmm <= 2000) or not (0.1 <= lmm <= 2):
+            return jsonify(error='打印尺寸需在 20–2000 mm，线宽 0.1–2 mm'), 400
+        overrides.update(print_mm=pmm, line_mm=lmm)
+        if 'bands' not in overrides:
+            overrides['bands'] = 56
     ink = request.form.get('ink', '').strip()
     if ink in ('0', '1'):
         overrides['ink'] = ink == '1'

@@ -10,7 +10,7 @@ Pipeline (see README for why each step exists):
   3. Trace:        vtracer 1.0 hierarchical (stacked) clustering + spline fitting.
   4. Output:       SVG at the input's pixel size (viewBox keeps the working resolution).
 """
-import argparse, json, re, time
+import argparse, json, math, re, time
 import numpy as np, cv2, vtracer
 from PIL import Image
 
@@ -61,7 +61,8 @@ def auto_params(img: Image.Image):
 def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_sp=8, ms_sr=14,
               filter_speckle=12, layer_difference=10, simplify=1.5, color_precision=6, ai=True,
               clean=None,
-              bands=0, vote_sigma=3.0, l_weight=1.3, c_weight=2.0, blur_sigma=12.0, edge_thr=0.4, detail_overlay=True, ink=False, progress=None):
+              bands=0, vote_sigma=3.0, l_weight=1.3, c_weight=2.0, blur_sigma=12.0, edge_thr=0.4, detail_overlay=True, ink=False, progress=None,
+              print_mm=0.0, line_mm=0.42):
     W, H = img.size
     # stage cost model (seconds per megapixel, CPU), calibrated on two test images; the AI step
     # scales with its (downscaled) input, everything else with the working resolution
@@ -100,6 +101,15 @@ def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_s
         rgb = cv2.pyrMeanShiftFiltering(rgb, ms_sp, ms_sr)
     h, w = rgb.shape[:2]
     palette = None
+    # print mode: smallest feature one `line_mm` extrusion can lay down, in working pixels
+    min_px = line_mm * max(w, h) / print_mm if print_mm else 0.0
+    hierarchical = "stacked"
+    if min_px:
+        filter_speckle = max(filter_speckle, int(math.ceil(min_px)))
+        # stacked shapes are fitted independently and leave slivers where their curves disagree
+        # (thousands of sub-extrusion islands); a cutout mosaic shares every boundary
+        hierarchical = "cutout"
+        detail_overlay = False      # printable details are already in the cleaned label map
     ink_paths = []
     if bands and ink:
         from .ink import ink_mask, fill_under, trace_ink
@@ -112,16 +122,17 @@ def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_s
         # contours come from the (pre-mean-shift) cleaned image: mean-shift plateaus are blocky
         rgb, palette = posterize(rgb, k=bands, vote_sigma=vote_sigma, l_weight=l_weight, c_weight=c_weight,
                                  edge_thr=edge_thr, blur_sigma=blur_sigma, smooth_src=clean,
-                                 progress=lambda f, s: report("bands", f, s))
+                                 progress=lambda f, s: report("bands", f, s), min_px=min_px)
         color_precision, layer_difference = 8, 1   # keep every band as its own layer
     report("trace", 0.0, "这一步无法细分，请稍候")
     cfg = vtracer.Config(filter_speckle=filter_speckle, layer_difference=layer_difference,
-                         color_precision=color_precision, simplify=simplify, palette=palette)
+                         color_precision=color_precision, simplify=simplify, palette=palette,
+                         hierarchical=hierarchical)
     svg = cfg.convert_pixels(np.dstack([rgb, np.full((h, w), 255, np.uint8)]).tobytes(), w, h)
     report("detail")
     if bands and detail_overlay:
         from .overlay import trace_details
-        extra = trace_details(rgb)
+        extra = trace_details(rgb, min_px=min_px)
         svg = svg.replace("</svg>", "\n".join(extra) + "\n</svg>")
     if ink_paths:
         svg = svg.replace("</svg>", "\n".join(ink_paths) + "\n</svg>")
@@ -142,6 +153,10 @@ def main():
                     help="use an image already cleaned by `python -m lumina_vec.denoise` (skips the AI step)")
     for k, v in PRESETS["illustration"].items():
         ap.add_argument("--" + k.replace("_", "-"), type=type(v), default=None)
+    ap.add_argument("--print-mm", type=float, default=0.0,
+                    help="print mode: printed length of this image's long side in mm (crop first if you only "
+                         "print part of it). Removes colour features narrower than one extrusion line")
+    ap.add_argument("--line-mm", type=float, default=0.42, help="extrusion line width in mm (default 0.42)")
     ap.add_argument("--ink", type=int, choices=[0, 1], default=None,
                     help="separate smoothed outline layer (default: on for the grainy `shading` preset)")
     a = ap.parse_args()
@@ -153,8 +168,12 @@ def main():
         params = dict(PRESETS[a.preset])
     if a.ink is not None:
         params["ink"] = bool(a.ink)
+    if a.print_mm:
+        params["print_mm"], params["line_mm"] = a.print_mm, a.line_mm
+        if a.bands is None and params.get("bands"):
+            params["bands"] = 56            # fewer colours -> fewer filament recipes -> fewer splits per layer
     for k in params:
-        if k == "ink":
+        if k in ("ink", "print_mm", "line_mm"):
             continue
         v = getattr(a, k)
         if v is not None:

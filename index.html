@@ -139,6 +139,19 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     </div>
 
     <div class="panel section">
+      <h2>3D 打印</h2>
+      <div class="field" style="margin-top:0">
+        <label>打印长边 <output>mm</output></label>
+        <input type="number" id="printMm" min="20" max="2000" step="1" placeholder="留空 = 不做打印优化" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--panel)">
+      </div>
+      <div class="field">
+        <label>挤出线宽 <output>mm</output></label>
+        <input type="number" id="lineMm" min="0.1" max="2" step="0.01" value="0.42" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--panel)">
+      </div>
+      <div class="hint">填写这张图打印出来时长边的尺寸（只打印一部分就先裁切）。会去掉窄于一根挤出线的碎色块，细线条加粗到线宽，颜色数降到 56。</div>
+    </div>
+
+    <div class="panel section">
       <h2>预设</h2>
       <div class="presets" id="presets"></div>
       <details>
@@ -212,6 +225,8 @@ $('#bands').oninput = e => $('#bandsOut').textContent = +e.target.value ? e.targ
 $('#ink').onclick = e => { const b = e.target.closest('button'); if (!b) return; ink = b.dataset.v;
   $('#ink').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); };
 
+try { const [pm, lm] = JSON.parse(localStorage.getItem('lvec.print') || '[]'); if (pm) $('#printMm').value = pm; if (lm) $('#lineMm').value = lm; } catch {}
+
 // ---------- file input: click, drop, paste
 const drop = $('#drop');
 drop.onclick = () => $('#file').click();
@@ -240,6 +255,8 @@ $('#go').onclick = () => {
   const fd = new FormData(); fd.append('image', file); fd.append('preset', preset);
   if (+$('#bands').value) fd.append('bands', $('#bands').value);
   if (ink) fd.append('ink', ink);
+  if (+$('#printMm').value) { fd.append('print_mm', $('#printMm').value); fd.append('line_mm', $('#lineMm').value || '0.42'); }
+  try { localStorage.setItem('lvec.print', JSON.stringify([$('#printMm').value, $('#lineMm').value])); } catch {}
   $('#go').disabled = true; showErr(''); $('#result').classList.remove('show');
   progress(true, '上传中', 0, '');
   const x = new XMLHttpRequest(); x.open('POST', '/api/process');
@@ -294,6 +311,7 @@ function showResult(id, r) {
     ['SVG', fmtBytes(r.bytes)], ['耗时', r.seconds + ' 秒'],
   ];
   if (p.ink) stats.splice(4, 0, ['轮廓层', '开']);
+  if (p.print_mm) stats.splice(1, 0, ['打印', `${p.print_mm} mm · 线宽 ${p.line_mm}`]);
   $('#stats').innerHTML = stats.map(([k, v]) => `<div class="stat"><small>${k}</small><b>${v ?? '–'}</b></div>`).join('');
   $('#dlSvg').href = r.svg + '?download=1'; $('#dlPng').href = r.png + '?download=1';
   $('#result').classList.add('show');
