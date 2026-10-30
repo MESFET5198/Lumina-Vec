@@ -27,6 +27,11 @@ PRESETS = {
     # painterly / detailed art (light grain, fine texture) + shading bands
     "shading-detail": dict(pre_down=2.0, work_scale=1.0, ms_sp=6, ms_sr=10,
                            filter_speckle=4, layer_difference=16, simplify=1.0, ink=True, **_BANDS),
+    # clean cel/flat-colour art (hard-edged fills): no gradient smoothing (it put halos around
+    # highlights), cutout tracing (shared edges, no slivers), fewer colours
+    "cel": dict(pre_down=2.0, work_scale=1.0, ms_sp=6, ms_sr=10, filter_speckle=4, layer_difference=16,
+                simplify=1.0, ink=True, **{**_BANDS, "bands": 48, "blur_sigma": 0.0},
+                detail_overlay=False, hierarchical_mode="cutout"),
     # fewer, larger shapes; loses tiny strokes (mouth lines etc.)
     "flat": dict(pre_down=2.0, work_scale=1.5, ms_sp=10, ms_sr=16,
                  filter_speckle=24, layer_difference=12, simplify=1.5, **_OFF),
@@ -37,7 +42,8 @@ PRESETS = {
 
 
 GRAIN_THRESHOLD = 4.0          # mean |img - median3(img)| on native-resolution grey
-MAX_WORK_PX = {"shading": 14e6, "shading-detail": 6e6}
+MAX_WORK_PX = {"shading": 14e6, "shading-detail": 6e6, "cel": 6e6}
+FLAT_THRESHOLD = 0.18          # share of pixels in gentle gradients; below = flat cel art
 
 
 def grain_level(img: Image.Image) -> float:
@@ -45,11 +51,24 @@ def grain_level(img: Image.Image) -> float:
     return float(np.abs(g.astype(np.int16) - cv2.medianBlur(g, 3).astype(np.int16)).mean())
 
 
+def gradient_share(img: Image.Image) -> float:
+    """Share of pixels in gentle colour gradients (shading), measured at ~1 MP after a median
+    filter (ignores grain). Flat cel art ~0.1, shaded illustrations 0.3-0.5."""
+    W, H = img.size; s = min(1.0, (1e6 / (W * H)) ** 0.5)
+    a = np.asarray(img.convert("RGB").resize((max(1, round(W * s)), max(1, round(H * s))), Image.BOX))
+    lab = cv2.cvtColor(cv2.medianBlur(a, 5).astype(np.float32) / 255, cv2.COLOR_RGB2Lab)
+    g = np.sqrt((cv2.Sobel(lab, cv2.CV_32F, 1, 0) ** 2 + cv2.Sobel(lab, cv2.CV_32F, 0, 1) ** 2).sum(-1))
+    return float(((g >= 2) & (g < 12)).mean())
+
+
 def auto_params(img: Image.Image):
     """Pick preset from measured grain, and shrink the working size of very large images.
     Calibrated on 3 images: heavy-grain flat anime (8.8), painterly (1.9), clean cel (0.2)."""
     grain = grain_level(img)
-    name = "shading" if grain >= GRAIN_THRESHOLD else "shading-detail"
+    if grain >= GRAIN_THRESHOLD:
+        name = "shading"
+    else:
+        name = "cel" if gradient_share(img) < FLAT_THRESHOLD else "shading-detail"
     params = dict(PRESETS[name])
     W, H = img.size
     cap = (MAX_WORK_PX[name] / (W * H)) ** 0.5
@@ -62,7 +81,7 @@ def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_s
               filter_speckle=12, layer_difference=10, simplify=1.5, color_precision=6, ai=True,
               clean=None,
               bands=0, vote_sigma=3.0, l_weight=1.3, c_weight=2.0, blur_sigma=12.0, edge_thr=0.4, detail_overlay=True, ink=False, progress=None,
-              print_mm=0.0, line_mm=0.42, lines="anime", weights_dir=None):
+              print_mm=0.0, line_mm=0.42, lines="anime", weights_dir=None, hierarchical_mode=None):
     W, H = img.size
     # stage cost model (seconds per megapixel, CPU), calibrated on two test images; the AI step
     # scales with its (downscaled) input, everything else with the working resolution
@@ -104,7 +123,7 @@ def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_s
     ink_paths = []
     # print mode: smallest feature one `line_mm` extrusion can lay down, in working pixels
     min_px = line_mm * max(w, h) / print_mm if print_mm else 0.0
-    hierarchical = "stacked"
+    hierarchical = hierarchical_mode or "stacked"
     if min_px:
         filter_speckle = max(filter_speckle, int(math.ceil(min_px)))
         # stacked shapes are fitted independently and leave slivers where their curves disagree
@@ -193,7 +212,7 @@ def main():
     for k in params:
         if k in ("ink", "print_mm", "line_mm", "lines"):
             continue
-        v = getattr(a, k)
+        v = getattr(a, k, None)
         if v is not None:
             params[k] = v
     t = time.time()
