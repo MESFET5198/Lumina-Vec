@@ -23,7 +23,7 @@ PRESETS = {
                          filter_speckle=12, layer_difference=10, simplify=1.5, **_OFF),
     # illustration + explicit shading bands: smooth light/dark transitions (more colours/paths)
     "shading": dict(pre_down=2.0, work_scale=1.5, ms_sp=8, ms_sr=14,
-                    filter_speckle=4, layer_difference=10, simplify=1.5, **_BANDS),
+                    filter_speckle=4, layer_difference=10, simplify=1.5, ink=True, **_BANDS),
     # painterly / detailed art (light grain, fine texture) + shading bands
     "shading-detail": dict(pre_down=2.0, work_scale=1.0, ms_sp=6, ms_sr=10,
                            filter_speckle=4, layer_difference=16, simplify=1.0, **_BANDS),
@@ -61,7 +61,7 @@ def auto_params(img: Image.Image):
 def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_sp=8, ms_sr=14,
               filter_speckle=12, layer_difference=10, simplify=1.5, color_precision=6, ai=True,
               clean=None,
-              bands=0, vote_sigma=3.0, l_weight=1.3, c_weight=2.0, blur_sigma=12.0, edge_thr=0.4, detail_overlay=True):
+              bands=0, vote_sigma=3.0, l_weight=1.3, c_weight=2.0, blur_sigma=12.0, edge_thr=0.4, detail_overlay=True, ink=False):
     W, H = img.size
     if clean is not None:   # AI step already done elsewhere (python -m lumina_vec.denoise)
         work = clean.convert("RGB").resize((round(W * work_scale), round(H * work_scale)), Image.LANCZOS)
@@ -76,6 +76,12 @@ def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_s
         rgb = cv2.pyrMeanShiftFiltering(rgb, ms_sp, ms_sr)
     h, w = rgb.shape[:2]
     palette = None
+    ink_paths = []
+    if bands and ink:
+        from .ink import ink_mask, fill_under, trace_ink
+        im = ink_mask(clean)
+        ink_paths = trace_ink(clean, im)
+        rgb, clean = fill_under(rgb, im), fill_under(clean, im)
     if bands:
         from .bands import posterize
         # contours come from the (pre-mean-shift) cleaned image: mean-shift plateaus are blocky
@@ -89,6 +95,8 @@ def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_s
         from .overlay import trace_details
         extra = trace_details(rgb)
         svg = svg.replace("</svg>", "\n".join(extra) + "\n</svg>")
+    if ink_paths:
+        svg = svg.replace("</svg>", "\n".join(ink_paths) + "\n</svg>")
     svg = re.sub(r"<svg\b([^>]*)>", lambda m: "<svg" + re.sub(r'\s(width|height)="[^"]*"', "", m.group(1))
                  + f' width="{W}" height="{H}" viewBox="0 0 {w} {h}">', svg, count=1)
     return svg, work
@@ -105,6 +113,8 @@ def main():
                     help="use an image already cleaned by `python -m lumina_vec.denoise` (skips the AI step)")
     for k, v in PRESETS["illustration"].items():
         ap.add_argument("--" + k.replace("_", "-"), type=type(v), default=None)
+    ap.add_argument("--ink", type=int, choices=[0, 1], default=None,
+                    help="separate smoothed outline layer (default: on for the grainy `shading` preset)")
     a = ap.parse_args()
     src = Image.open(a.input)
     if a.preset == "auto":
@@ -112,7 +122,11 @@ def main():
         print(json.dumps(dict(auto_preset=chosen, grain=round(grain, 2), work_scale=params["work_scale"])))
     else:
         params = dict(PRESETS[a.preset])
+    if a.ink is not None:
+        params["ink"] = bool(a.ink)
     for k in params:
+        if k == "ink":
+            continue
         v = getattr(a, k)
         if v is not None:
             params[k] = v
