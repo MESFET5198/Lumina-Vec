@@ -1,4 +1,376 @@
-<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Lumina-Vec</title>
-<style>body{font:16px system-ui;background:#f3f5fa;color:#182236;margin:0}.wrap{max-width:1050px;margin:32px auto;padding:28px;background:white;border-radius:18px;box-shadow:0 8px 32px #18223618}h1{margin-top:0}label,button{display:block;margin:16px 0 8px}input,select,button{font:inherit;padding:10px;border:1px solid #ccd4e2;border-radius:8px}button{background:#2764e8;color:white;border:0;cursor:pointer}button:disabled{opacity:.5}.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.card{padding:14px;background:#f7f9fc;border-radius:12px;min-width:0}.card img{width:100%;max-height:70vh;object-fit:contain;background:repeating-conic-gradient(#ddd 0 25%,white 0 50%) 0/16px 16px}.muted{color:#64748b;font-size:14px}progress{width:100%;height:18px}@media(max-width:700px){.wrap{margin:0;padding:16px;border-radius:0}.grid{grid-template-columns:1fr}}</style>
-<main class="wrap"><h1>Lumina-Vec</h1><p class="muted">动漫插画转彩色 SVG。大图保持原始输入尺寸；项目预设可能会缩小内部工作分辨率以控制耗时。</p><form id="form"><label>选择图片 <input type="file" name="image" accept="image/png,image/jpeg,image/webp" required></label><label>处理预设 <select name="preset"><option value="auto">自动选择（推荐）</option><option value="shading">Shading · 颗粒较重的平涂图</option><option value="shading-detail">Shading Detail · 厚涂或细节丰富</option><option value="illustration">Illustration · 简化色块</option><option value="detail">Detail · 保留细节</option><option value="flat">Flat · 大色块</option></select></label><button id="go">开始转换</button></form><p id="status">就绪</p><progress id="progress" value="0" max="100"></progress><section id="out" class="grid"></section></main>
-<script>const f=document.querySelector('#form'),s=document.querySelector('#status'),p=document.querySelector('#progress'),b=document.querySelector('#go'),out=document.querySelector('#out');f.onsubmit=e=>{e.preventDefault();out.replaceChildren();b.disabled=true;p.value=0;const x=new XMLHttpRequest(),t=Date.now();x.open('POST','/api/process');x.upload.onprogress=e=>{if(e.lengthComputable){p.value=e.loaded/e.total*100;s.textContent=`上传 ${Math.round(p.value)}%`}};x.onload=()=>{if(x.status>=400){s.textContent=JSON.parse(x.responseText).error;b.disabled=false;return}const {job}=JSON.parse(x.responseText);s.textContent='服务器处理中…';const timer=setInterval(async()=>{try{const r=await fetch('/api/status/'+job).then(r=>r.json());s.textContent=`${r.status==='done'?'完成':r.status==='error'?'失败':'处理中'} · ${Math.round((Date.now()-t)/1000)} 秒`;if(r.status==='done'){clearInterval(timer);p.value=100;s.textContent=`完成 · ${r.preset} · ${r.width}×${r.height} · ${r.paths} 条路径 · ${(r.bytes/1048576).toFixed(2)} MB · ${r.seconds} 秒`;for(const [title,url,download] of [['PNG 预览',r.png,false],['SVG 成品',r.svg,true]]){const d=document.createElement('article');d.className='card';const h=document.createElement('h3');h.textContent=title;d.append(h);if(!download){const im=document.createElement('img');im.src=url;d.append(im)}const a=document.createElement('a');a.href=url+(download?'?download=1':'');a.download='';a.textContent='下载 '+title;d.append(a);out.append(d)}b.disabled=false}else if(r.status==='error'){clearInterval(timer);s.textContent='处理失败：'+r.error;b.disabled=false}}catch{}} ,1000)};x.onerror=()=>{s.textContent='连接失败';b.disabled=false};x.send(new FormData(f))};</script></html>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lumina-Vec</title>
+<style>
+:root{
+  --bg:#f4f3ef;--panel:#ffffff;--ink:#1d1b18;--muted:#6d685f;--line:#e2ded5;--soft:#f0ede6;
+  --accent:#d9480f;--accent-ink:#fff;--ok:#2f7d4a;--err:#b42318;
+  --checker-a:#e9e6df;--checker-b:#f8f7f3;
+  --radius:14px;--shadow:0 1px 2px rgba(0,0,0,.04),0 8px 24px rgba(0,0,0,.06);
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#141312;--panel:#1d1c1a;--ink:#ecebe7;--muted:#9a958c;--line:#2e2c29;--soft:#262421;
+  --accent:#ff6b2c;--accent-ink:#1a0d06;--ok:#5cc17f;--err:#ff7a6b;
+  --checker-a:#232120;--checker-b:#2b2927;--shadow:none;
+}}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+button,input,select{font:inherit;color:inherit}
+header{display:flex;align-items:center;gap:12px;padding:14px 24px;border-bottom:1px solid var(--line);background:var(--panel)}
+.logo{width:28px;height:28px;border-radius:8px;background:conic-gradient(from 200deg,#d9480f,#f59f00,#2f9e44,#1c7ed6,#ae3ec9,#d9480f)}
+header h1{font-size:17px;margin:0;letter-spacing:.2px}
+header .sub{color:var(--muted);font-size:13px}
+header .health{margin-left:auto;font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}.dot.ok{background:var(--ok)}.dot.bad{background:var(--err)}
+
+.app{display:grid;grid-template-columns:340px 1fr;gap:20px;padding:20px 24px;max-width:1600px;margin:0 auto}
+@media (max-width:900px){.app{grid-template-columns:1fr;padding:16px}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
+.side{display:flex;flex-direction:column;gap:16px;align-self:start;position:sticky;top:16px}
+@media (max-width:900px){.side{position:static}}
+.section{padding:16px}
+.section h2{font-size:13px;font-weight:600;color:var(--muted);margin:0 0 10px;text-transform:uppercase;letter-spacing:.6px}
+
+.drop{border:1.5px dashed var(--line);border-radius:12px;padding:18px;text-align:center;cursor:pointer;transition:.15s;background:var(--soft)}
+.drop:hover,.drop.over{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 8%,var(--soft))}
+.drop strong{display:block;margin-bottom:2px}
+.drop small{color:var(--muted)}
+.file{display:none;gap:12px;align-items:center;margin-top:12px}
+.file.show{display:flex}
+.file img{width:56px;height:56px;object-fit:cover;border-radius:8px;border:1px solid var(--line)}
+.file .meta{min-width:0;font-size:13px}
+.file .meta b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.file .meta span{color:var(--muted)}
+
+.presets{display:grid;gap:8px}
+.preset{display:flex;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;cursor:pointer;transition:.12s}
+.preset:hover{border-color:color-mix(in srgb,var(--accent) 50%,var(--line))}
+.preset input{accent-color:var(--accent);margin-top:3px}
+.preset.sel{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 7%,transparent)}
+.preset b{display:block;font-size:14px}
+.preset span{font-size:12.5px;color:var(--muted)}
+.preset .tag{color:var(--accent-ink)}
+.tag{font-size:11px;padding:1px 6px;border-radius:99px;background:var(--accent);color:var(--accent-ink);margin-left:6px;vertical-align:1px}
+
+details{border-top:1px solid var(--line);padding-top:12px;margin-top:4px}
+summary{cursor:pointer;font-size:13.5px;color:var(--muted)}
+.field{margin-top:12px}
+.field label{display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px}
+.field label output{color:var(--muted)}
+input[type=range]{width:100%;accent-color:var(--accent)}
+.seg{display:flex;border:1px solid var(--line);border-radius:9px;overflow:hidden}
+.seg button{flex:1;padding:6px 0;border:0;background:transparent;cursor:pointer;font-size:13px}
+.seg button+button{border-left:1px solid var(--line)}
+.seg button.on{background:var(--accent);color:var(--accent-ink)}
+.hint{font-size:12px;color:var(--muted);margin-top:6px}
+
+.go{width:100%;padding:12px;border:0;border-radius:10px;background:var(--accent);color:var(--accent-ink);font-weight:600;font-size:15px;cursor:pointer;transition:.12s}
+.go:hover{filter:brightness(1.05)}.go:disabled{opacity:.45;cursor:not-allowed}
+
+.main{display:flex;flex-direction:column;gap:16px;min-width:0}
+.viewer{position:relative;height:min(72vh,820px);min-height:380px;overflow:hidden;border-radius:var(--radius);
+  background:repeating-conic-gradient(var(--checker-a) 0 25%,var(--checker-b) 0 50%) 0 0/20px 20px;touch-action:none;cursor:grab}
+.viewer.drag{cursor:grabbing}
+.stage{position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform}
+.stage img{position:absolute;left:0;top:0;width:100%;height:100%;user-select:none;-webkit-user-drag:none;pointer-events:none}
+.empty{position:absolute;inset:0;display:grid;place-items:center;color:var(--muted);text-align:center;padding:24px}
+.empty b{display:block;color:var(--ink);font-size:16px;margin-bottom:4px}
+.split{position:absolute;top:0;bottom:0;width:0;border-left:2px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,.25);cursor:ew-resize;display:none}
+.split::after{content:"⇆";position:absolute;top:50%;left:-17px;width:32px;height:32px;margin-top:-16px;border-radius:50%;
+  background:#fff;color:#222;display:grid;place-items:center;font-size:14px;box-shadow:0 2px 8px rgba(0,0,0,.25)}
+.split::before{content:"";position:absolute;top:0;bottom:0;left:-12px;width:22px}
+.lbl{position:absolute;top:10px;font-size:12px;padding:3px 8px;border-radius:6px;background:rgba(0,0,0,.55);color:#fff;pointer-events:none;display:none}
+.lbl.l{left:10px}.lbl.r{right:10px}
+.toolbar{position:absolute;right:10px;bottom:10px;display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.toolbar button{border:0;background:rgba(20,20,20,.7);color:#fff;padding:6px 10px;border-radius:8px;cursor:pointer;font-size:12.5px;backdrop-filter:blur(6px)}
+.toolbar button.on{background:var(--accent);color:var(--accent-ink)}
+.zoom{position:absolute;left:10px;bottom:10px;font-size:12px;padding:3px 8px;border-radius:6px;background:rgba(0,0,0,.55);color:#fff}
+
+.progress{position:absolute;inset:0;display:none;place-items:center;background:color-mix(in srgb,var(--bg) 70%,transparent);backdrop-filter:blur(2px)}
+.progress.show{display:grid}
+.pbox{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 22px;min-width:280px;box-shadow:var(--shadow)}
+.pbox b{display:block;margin-bottom:8px}
+.bar{height:6px;border-radius:99px;background:var(--soft);overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:var(--accent);transition:width .4s}
+.bar.indet i{width:35%;animation:indet 1.2s ease-in-out infinite}
+@keyframes indet{0%{transform:translateX(-100%)}100%{transform:translateX(300%)}}
+.pbox small{display:block;margin-top:8px;color:var(--muted)}
+
+.result{display:none;padding:14px 16px;align-items:center;gap:16px;flex-wrap:wrap}
+.result.show{display:flex}
+.stats{display:flex;gap:18px;flex-wrap:wrap;flex:1}
+.stat small{display:block;font-size:11.5px;color:var(--muted)}
+.stat b{font-size:15px;font-variant-numeric:tabular-nums}
+.dl{display:flex;gap:8px}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:9px;border:1px solid var(--line);text-decoration:none;color:var(--ink);font-size:14px;background:var(--panel)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+.err{color:var(--err);padding:12px 16px;display:none}.err.show{display:block}
+
+.history{padding:12px 16px}
+.history h2{font-size:13px;color:var(--muted);margin:0 0 10px;font-weight:600}
+.hlist{display:flex;gap:10px;overflow-x:auto;padding-bottom:4px}
+.hitem{flex:0 0 auto;width:92px;cursor:pointer;font-size:11.5px;color:var(--muted);text-align:center}
+.hitem img{width:92px;height:92px;object-fit:cover;border-radius:8px;border:1px solid var(--line);display:block;margin-bottom:4px;background:var(--soft)}
+.hitem.cur img{outline:2px solid var(--accent);outline-offset:1px}
+.hitem span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo"></div>
+  <div><h1>Lumina-Vec</h1><div class="sub">二次元插画 → 叠色打印用 SVG</div></div>
+  <div class="health"><i class="dot" id="hdot"></i><span id="htext">检查服务…</span></div>
+</header>
+
+<div class="app">
+  <aside class="side">
+    <div class="panel section">
+      <h2>图片</h2>
+      <div class="drop" id="drop">
+        <strong>拖入图片，或点击选择</strong>
+        <small>也可以直接 Ctrl+V 粘贴 · PNG / JPG / WebP · 最大 40 MP</small>
+      </div>
+      <input type="file" id="file" accept="image/png,image/jpeg,image/webp" hidden>
+      <div class="file" id="fileinfo"><img id="thumb" alt=""><div class="meta"><b id="fname"></b><span id="fmeta"></span></div></div>
+    </div>
+
+    <div class="panel section">
+      <h2>预设</h2>
+      <div class="presets" id="presets"></div>
+      <details>
+        <summary>高级选项</summary>
+        <div class="field">
+          <label>颜色数 <output id="bandsOut">预设默认</output></label>
+          <input type="range" id="bands" min="0" max="160" step="8" value="0">
+          <div class="hint">0 = 跟随预设（112）。数量越少，叠色打印的区域越少、越不碎。</div>
+        </div>
+        <div class="field">
+          <label>轮廓线平滑层</label>
+          <div class="seg" id="ink"><button data-v="" class="on">自动</button><button data-v="1">开</button><button data-v="0">关</button></div>
+          <div class="hint">自动：仅颗粒重的图开启。线条有锯齿时打开，细线被吃掉时关闭。</div>
+        </div>
+      </details>
+    </div>
+
+    <button class="go" id="go" disabled>开始转换</button>
+  </aside>
+
+  <section class="main">
+    <div class="panel viewer" id="viewer">
+      <div class="stage" id="stage"><img id="imgA" alt=""><img id="imgB" alt=""></div>
+      <div class="split" id="split"></div>
+      <span class="lbl l" id="lblL">原图</span><span class="lbl r" id="lblR">SVG</span>
+      <div class="empty" id="empty"><div><b>还没有图片</b>选择一张插画开始；转换后可以拖动中线对比、滚轮放大检查线条</div></div>
+      <span class="zoom" id="zoomLbl" hidden>100%</span>
+      <div class="toolbar" id="toolbar" hidden>
+        <button data-mode="compare" class="on">对比</button>
+        <button data-mode="a">原图</button>
+        <button data-mode="b">SVG</button>
+        <button data-z="fit">适应</button>
+        <button data-z="1">1:1</button>
+        <button data-z="4">4×</button>
+      </div>
+      <div class="progress" id="progress"><div class="pbox">
+        <b id="pTitle">上传中</b><div class="bar" id="pbar"><i id="pfill"></i></div><small id="pText"></small>
+      </div></div>
+    </div>
+
+    <div class="panel err" id="err"></div>
+
+    <div class="panel result" id="result">
+      <div class="stats" id="stats"></div>
+      <div class="dl"><a class="btn primary" id="dlSvg" download>下载 SVG</a><a class="btn" id="dlPng" download>PNG 预览</a></div>
+    </div>
+
+    <div class="panel history" id="history" hidden><h2>最近转换</h2><div class="hlist" id="hlist"></div></div>
+  </section>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const PRESETS = [
+  ['auto','自动','按颗粒程度和尺寸自动选择',true],
+  ['shading','Shading','平涂二次元，颗粒重；含明暗分层和轮廓平滑'],
+  ['shading-detail','Shading Detail','厚涂、纹理多或干净的赛璐璐'],
+  ['illustration','Illustration','不分层，色块最少、文件最小'],
+  ['detail','Detail','不分层，保留更多细节'],
+  ['flat','Flat','更少更大的色块，会丢细笔画'],
+];
+let file = null, preset = 'auto', ink = '', job = null, poll = null, srcURL = null;
+
+// ---------- presets & options
+$('#presets').innerHTML = PRESETS.map(([v,t,d,rec]) =>
+  `<label class="preset${v===preset?' sel':''}"><input type="radio" name="p" value="${v}"${v===preset?' checked':''}>
+   <div><b>${t}${rec?'<span class="tag">推荐</span>':''}</b><span>${d}</span></div></label>`).join('');
+$('#presets').onchange = e => { preset = e.target.value;
+  document.querySelectorAll('.preset').forEach(p => p.classList.toggle('sel', p.querySelector('input').checked)); };
+$('#bands').oninput = e => $('#bandsOut').textContent = +e.target.value ? e.target.value + ' 色' : '预设默认';
+$('#ink').onclick = e => { const b = e.target.closest('button'); if (!b) return; ink = b.dataset.v;
+  $('#ink').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); };
+
+// ---------- file input: click, drop, paste
+const drop = $('#drop');
+drop.onclick = () => $('#file').click();
+$('#file').onchange = e => e.target.files[0] && setFile(e.target.files[0]);
+['dragenter','dragover'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add('over'); }));
+['dragleave','drop'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.remove('over'); }));
+drop.addEventListener('drop', e => { const f = e.dataTransfer.files[0]; f && setFile(f); });
+window.addEventListener('paste', e => { const it = [...e.clipboardData.items].find(i => i.type.startsWith('image/'));
+  if (it) setFile(new File([it.getAsFile()], 'pasted.png', {type: it.type})); });
+
+function setFile(f) {
+  if (!/^image\/(png|jpeg|webp)$/.test(f.type)) return showErr('只支持 PNG / JPG / WebP');
+  file = f; if (srcURL) URL.revokeObjectURL(srcURL); srcURL = URL.createObjectURL(f);
+  const im = new Image(); im.onload = () => {
+    $('#fname').textContent = f.name;
+    $('#fmeta').textContent = `${im.naturalWidth}×${im.naturalHeight} · ${(im.naturalWidth*im.naturalHeight/1e6).toFixed(1)} MP · ${fmtBytes(f.size)}`;
+    $('#thumb').src = srcURL; $('#fileinfo').classList.add('show'); $('#go').disabled = false;
+    showErr(''); $('#result').classList.remove('show');
+    setView(srcURL, null, im.naturalWidth, im.naturalHeight);
+  }; im.src = srcURL;
+}
+
+// ---------- submit & poll
+$('#go').onclick = () => {
+  if (!file) return;
+  const fd = new FormData(); fd.append('image', file); fd.append('preset', preset);
+  if (+$('#bands').value) fd.append('bands', $('#bands').value);
+  if (ink) fd.append('ink', ink);
+  $('#go').disabled = true; showErr(''); $('#result').classList.remove('show');
+  progress(true, '上传中', 0, '');
+  const x = new XMLHttpRequest(); x.open('POST', '/api/process');
+  x.upload.onprogress = e => e.lengthComputable && progress(true, '上传中', e.loaded / e.total * 100, fmtBytes(e.loaded) + ' / ' + fmtBytes(e.total));
+  x.onload = () => {
+    let r = {}; try { r = JSON.parse(x.responseText); } catch {}
+    if (x.status >= 400) { progress(false); $('#go').disabled = false; return showErr(r.error || '上传失败'); }
+    job = r.job; track(job, true);
+  };
+  x.onerror = () => { progress(false); $('#go').disabled = false; showErr('连接失败'); };
+  x.send(fd);
+};
+
+function track(id, fresh) {
+  clearInterval(poll);
+  const est = estimateSeconds();
+  const tick = async () => {
+    let r; try { r = await fetch('/api/status/' + id).then(r => r.json()); } catch { return; }
+    if (r.status === 'queued') progress(true, '排队中', null, r.ahead ? `前面还有 ${r.ahead} 个任务` : '即将开始');
+    else if (r.status === 'running') {
+      const pct = est ? Math.min(95, r.elapsed / est * 100) : null;
+      progress(true, '转换中', pct, `已用 ${r.elapsed.toFixed(0)} 秒` + (est ? ` · 预计约 ${Math.round(est)} 秒` : ''));
+    } else if (r.status === 'done') {
+      clearInterval(poll); progress(false); $('#go').disabled = !file;
+      if (fresh) learn(r);
+      showResult(id, r); loadHistory();
+    } else if (r.status === 'error' || r.error) {
+      clearInterval(poll); progress(false); $('#go').disabled = !file; showErr('转换失败：' + (r.error || '未知错误'));
+    }
+  };
+  tick(); poll = setInterval(tick, 1000);
+}
+
+// rough ETA learned from previous runs on this browser (seconds per megapixel)
+function estimateSeconds() {
+  let spm = null; try { spm = +localStorage.getItem('lvec.spm') || null; } catch {}
+  const mp = (viewW * viewH) / 1e6; return spm && mp ? spm * mp : null;
+}
+function learn(r) { try { const mp = r.width * r.height / 1e6; if (mp && r.seconds) {
+  const old = +localStorage.getItem('lvec.spm') || 0, v = r.seconds / mp;
+  localStorage.setItem('lvec.spm', old ? old * .6 + v * .4 : v); } } catch {} }
+
+function showResult(id, r) {
+  setView(srcURL || '/file/' + id + '.source', r.svg, r.width, r.height);
+  const p = r.params || {};
+  const stats = [
+    ['预设', r.preset + (preset === 'auto' ? ' (自动)' : '')],
+    ['颗粒度', r.grain], ['尺寸', `${r.width}×${r.height}`],
+    ['颜色', r.colors], ['路径', (r.paths || 0).toLocaleString()],
+    ['SVG', fmtBytes(r.bytes)], ['耗时', r.seconds + ' 秒'],
+  ];
+  if (p.ink) stats.splice(4, 0, ['轮廓层', '开']);
+  $('#stats').innerHTML = stats.map(([k, v]) => `<div class="stat"><small>${k}</small><b>${v ?? '–'}</b></div>`).join('');
+  $('#dlSvg').href = r.svg + '?download=1'; $('#dlPng').href = r.png + '?download=1';
+  $('#result').classList.add('show');
+  document.querySelectorAll('.hitem').forEach(h => h.classList.toggle('cur', h.dataset.id === id));
+}
+
+async function loadHistory() {
+  let items = []; try { items = await fetch('/api/jobs').then(r => r.json()); } catch {}
+  items = items.filter(i => i.status === 'done');
+  $('#history').hidden = !items.length;
+  $('#hlist').innerHTML = items.map(i => `<div class="hitem${i.id===job?' cur':''}" data-id="${i.id}" title="${esc(i.name||'')}">
+    <img loading="lazy" src="${i.png}" alt=""><span>${esc(i.name || '')}</span><span>${i.preset} · ${i.seconds}s</span></div>`).join('');
+}
+$('#hlist').onclick = async e => { const h = e.target.closest('.hitem'); if (!h) return;
+  const r = await fetch('/api/status/' + h.dataset.id).then(r => r.json());
+  if (r.status === 'done') { job = h.dataset.id; srcURL = null; showResult(job, r); } };
+
+// ---------- viewer: compare slider + zoom / pan
+const viewer = $('#viewer'), stage = $('#stage'), A = $('#imgA'), B = $('#imgB'), split = $('#split');
+let viewW = 0, viewH = 0, s = 1, tx = 0, ty = 0, cut = .5, mode = 'compare', hasB = false;
+
+function setView(a, b, w, h) {
+  viewW = w; viewH = h; A.src = a; hasB = !!b; if (b) B.src = b; else B.removeAttribute('src');
+  $('#empty').hidden = true; $('#toolbar').hidden = false; $('#zoomLbl').hidden = false;
+  if (!hasB) setMode('a', true); else setMode(mode === 'a' ? 'compare' : mode, true);
+  fit();
+}
+function fit() { const r = viewer.getBoundingClientRect(); s = Math.min(r.width / viewW, r.height / viewH) * .96;
+  tx = (r.width - viewW * s) / 2; ty = (r.height - viewH * s) / 2; apply(); }
+function zoomAt(ns, cx, cy) { ns = Math.max(.05, Math.min(12, ns)); tx = cx - (cx - tx) * ns / s; ty = cy - (cy - ty) * ns / s; s = ns; apply(); }
+function apply() {
+  // resize layout (not CSS scale) so the SVG is re-rasterised crisply at every zoom level
+  stage.style.transform = `translate(${tx}px,${ty}px)`;
+  stage.style.width = viewW * s + 'px'; stage.style.height = viewH * s + 'px';
+  const showB = hasB && mode !== 'a', showA = mode !== 'b' || !hasB;
+  A.style.visibility = showA ? 'visible' : 'hidden'; B.style.visibility = showB ? 'visible' : 'hidden';
+  B.style.clipPath = mode === 'compare' ? `inset(0 0 0 ${cut * 100}%)` : 'none';
+  const cmp = hasB && mode === 'compare';
+  split.style.display = cmp ? 'block' : 'none'; split.style.left = (tx + viewW * s * cut) + 'px';
+  $('#lblL').style.display = $('#lblR').style.display = cmp ? 'block' : 'none';
+  $('#zoomLbl').textContent = Math.round(s * 100) + '%';
+}
+function setMode(m, quiet) { mode = m; $('#toolbar').querySelectorAll('[data-mode]').forEach(b => {
+  b.classList.toggle('on', b.dataset.mode === m); b.style.display = (!hasB && b.dataset.mode !== 'a') ? 'none' : ''; });
+  if (!quiet) apply(); }
+$('#toolbar').onclick = e => { const b = e.target.closest('button'); if (!b) return;
+  if (b.dataset.mode) return setMode(b.dataset.mode), apply();
+  const r = viewer.getBoundingClientRect();
+  if (b.dataset.z === 'fit') fit(); else zoomAt(+b.dataset.z, r.width / 2, r.height / 2); };
+viewer.addEventListener('wheel', e => { if (!viewW) return; e.preventDefault(); const r = viewer.getBoundingClientRect();
+  zoomAt(s * Math.exp(-e.deltaY * .0015), e.clientX - r.left, e.clientY - r.top); }, {passive: false});
+let dragging = null, last = null;
+viewer.addEventListener('pointerdown', e => { if (!viewW || e.target.closest('.toolbar')) return;
+  dragging = e.target === split ? 'split' : 'pan'; last = [e.clientX, e.clientY];
+  viewer.setPointerCapture(e.pointerId); if (dragging === 'pan') viewer.classList.add('drag'); });
+viewer.addEventListener('pointermove', e => { if (!dragging) return; const r = viewer.getBoundingClientRect();
+  if (dragging === 'split') cut = Math.max(0, Math.min(1, (e.clientX - r.left - tx) / (viewW * s)));
+  else { tx += e.clientX - last[0]; ty += e.clientY - last[1]; last = [e.clientX, e.clientY]; }
+  apply(); });
+['pointerup','pointercancel'].forEach(t => viewer.addEventListener(t, () => { dragging = null; viewer.classList.remove('drag'); }));
+viewer.addEventListener('dblclick', e => { if (!viewW) return; const r = viewer.getBoundingClientRect();
+  zoomAt(s < 1 ? 1 : s * 2, e.clientX - r.left, e.clientY - r.top); });
+window.addEventListener('resize', () => viewW && fit());
+
+// ---------- helpers
+function progress(show, title, pct, text) {
+  $('#progress').classList.toggle('show', show); if (!show) return;
+  $('#pTitle').textContent = title; $('#pText').textContent = text || '';
+  $('#pbar').classList.toggle('indet', pct == null); $('#pfill').style.width = pct == null ? '' : pct + '%';
+}
+function showErr(m) { $('#err').textContent = m; $('#err').classList.toggle('show', !!m); }
+function fmtBytes(b) { return b == null ? '–' : b > 1048576 ? (b / 1048576).toFixed(2) + ' MB' : (b / 1024).toFixed(0) + ' KB'; }
+function esc(t) { return t.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+fetch('/healthz').then(r => r.json()).then(h => {
+  $('#hdot').className = 'dot ' + (h.weights ? 'ok' : 'bad');
+  $('#htext').textContent = h.weights ? '服务正常' : '缺少模型权重';
+}).catch(() => { $('#hdot').className = 'dot bad'; $('#htext').textContent = '服务不可用'; });
+loadHistory();
+</script>
+</body>
+</html>
