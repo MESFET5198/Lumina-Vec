@@ -90,9 +90,14 @@ def trace_lines(rgb, strokes, redrawn_ss, ss=2, merge_de=0.06, max_colors=12, si
     cols = np.zeros((n, 3), np.float32); cnt = np.bincount(ids, minlength=n).astype(np.float32)
     order = np.argsort(ids, kind="stable"); ids_s = ids[order]; px_s = px[order]
     b = np.searchsorted(ids_s, np.arange(n + 1))
+    Ls = srgb_to_oklab(px_s[None].astype(np.uint8))[0][:, 0] if len(px_s) else np.zeros(0)
     for i in range(1, n):
         if b[i + 1] > b[i]:
-            cols[i] = np.median(px_s[b[i]:b[i + 1]], 0)
+            # line colour = its core: the darkest quarter of its pixels. A plain median picks up
+            # anti-alias / chromatic-aberration fringes (red/cyan edges turned black lines red)
+            seg, Lseg = px_s[b[i]:b[i + 1]], Ls[b[i]:b[i + 1]]
+            core = seg[Lseg <= np.quantile(Lseg, 0.25)] if len(seg) >= 8 else seg
+            cols[i] = np.median(core, 0)
         else:
             cols[i] = np.median(rgb[strokes], 0) if strokes.any() else 0
     area = np.bincount(cc.ravel(), minlength=n)
