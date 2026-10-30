@@ -51,6 +51,24 @@ def grain_level(img: Image.Image) -> float:
     return float(np.abs(g.astype(np.int16) - cv2.medianBlur(g, 3).astype(np.int16)).mean())
 
 
+def add_gap_fillers(svg):
+    """Display-only seam cover for shared-edge (cutout) output: before each fill path, a
+    same-colour 2px non-scaling stroke in Lumina's exact `qq3d-gap-filler` layout, which
+    Lumina strips on import (core/vector_engine.py fast filter), so it never reaches the print."""
+    def rep(m):
+        tag = m.group(0)
+        d = re.search(r'\sd="([^"]*)"', tag); f = re.search(r'\sfill="(#[0-9a-fA-F]{6})"', tag)
+        if not d or not f:
+            return tag
+        gf = (f'<path class="qq3d-gap-filler" d="{d.group(1)}" fill="none" stroke="{f.group(1)}" '
+              'stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>')
+        tr = re.search(r'\stransform="([^"]*)"', tag)
+        if tr:
+            gf = f'<g transform="{tr.group(1)}">{gf}</g>'
+        return gf + "\n" + tag
+    return re.sub(r"<path\b[^>]*/>", rep, svg)
+
+
 def gradient_share(img: Image.Image) -> float:
     """Share of pixels in gentle colour gradients (shading), measured at ~1 MP after a median
     filter (ignores grain). Flat cel art ~0.1, shaded illustrations 0.3-0.5."""
@@ -163,6 +181,8 @@ def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_s
                          hierarchical=hierarchical)
     svg = cfg.convert_pixels(np.dstack([rgb, np.full((h, w), 255, np.uint8)]).tobytes(), w, h)
     report("detail")
+    if hierarchical == "cutout":
+        svg = add_gap_fillers(svg)       # colour layer only; lines/details go on top afterwards
     if bands and detail_overlay:
         from .overlay import trace_details
         extra = trace_details(rgb, min_px=min_px)
