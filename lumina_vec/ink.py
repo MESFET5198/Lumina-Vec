@@ -90,14 +90,19 @@ def trace_lines(rgb, strokes, redrawn_ss, ss=2, merge_de=0.06, max_colors=12, si
     cols = np.zeros((n, 3), np.float32); cnt = np.bincount(ids, minlength=n).astype(np.float32)
     order = np.argsort(ids, kind="stable"); ids_s = ids[order]; px_s = px[order]
     b = np.searchsorted(ids_s, np.arange(n + 1))
-    Ls = srgb_to_oklab(px_s[None].astype(np.uint8))[0][:, 0] if len(px_s) else np.zeros(0)
+    # line colour = its core = pixels on the stroke centreline (skeleton). Fringes (anti-alias,
+    # chromatic aberration) sit on the sides; picking by position keeps the true line colour
+    # without darkening ordinary lines the way "darkest pixels" did
+    from skimage.morphology import skeletonize
+    skel = skeletonize(strokes) & (cc_lo > 0)
+    sid = cc_lo[skel]; spx = rgb[skel].astype(np.float32)
+    o2 = np.argsort(sid, kind="stable"); sid_s = sid[o2]; spx_s = spx[o2]
+    b2 = np.searchsorted(sid_s, np.arange(n + 1))
     for i in range(1, n):
-        if b[i + 1] > b[i]:
-            # line colour = its core: the darkest quarter of its pixels. A plain median picks up
-            # anti-alias / chromatic-aberration fringes (red/cyan edges turned black lines red)
-            seg, Lseg = px_s[b[i]:b[i + 1]], Ls[b[i]:b[i + 1]]
-            core = seg[Lseg <= np.quantile(Lseg, 0.25)] if len(seg) >= 8 else seg
-            cols[i] = np.median(core, 0)
+        if b2[i + 1] > b2[i]:
+            cols[i] = np.median(spx_s[b2[i]:b2[i + 1]], 0)
+        elif b[i + 1] > b[i]:
+            cols[i] = np.median(px_s[b[i]:b[i + 1]], 0)
         else:
             cols[i] = np.median(rgb[strokes], 0) if strokes.any() else 0
     area = np.bincount(cc.ravel(), minlength=n)

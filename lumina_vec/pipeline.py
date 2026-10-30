@@ -139,6 +139,7 @@ def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_s
     h, w = rgb.shape[:2]
     palette = None
     ink_paths = []
+    ink_cover = None
     # print mode: smallest feature one `line_mm` extrusion can lay down, in working pixels
     min_px = line_mm * max(w, h) / print_mm if print_mm else 0.0
     hierarchical = hierarchical_mode or "stacked"
@@ -159,7 +160,8 @@ def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_s
             report("ink", 0.05, "AI 识别线条")
             lm = line_map(clean, "anime", detect_long=min(3072, max(clean.shape[:2])), weights_dir=wdir)
             report("ink", 0.6, "重绘线条")
-            im = stroke_mask(clean, lm)
+            # print mode: a stroke shorter than a few extrusion widths prints as a blob
+            im = stroke_mask(clean, lm, min_len=max(6, int(round(4 * min_px))) if min_px else 6)
             rd = redraw_strokes(im, min_radius=min_px / 2 if min_px else 0.0)
             report("ink", 0.8, "描摹线条")
             ink_paths = trace_lines(clean, im, rd)
@@ -168,12 +170,14 @@ def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_s
             im = ink_mask(clean)
             ink_paths = trace_ink(clean, im)
         rgb, clean = fill_under(rgb, im), fill_under(clean, im)
+        ink_cover = im
     if bands:
         from .bands import posterize
         # contours come from the (pre-mean-shift) cleaned image: mean-shift plateaus are blocky
         rgb, palette = posterize(rgb, k=bands, vote_sigma=vote_sigma, l_weight=l_weight, c_weight=c_weight,
                                  edge_thr=edge_thr, blur_sigma=blur_sigma, smooth_src=clean,
-                                 progress=lambda f, s: report("bands", f, s), min_px=min_px)
+                                 progress=lambda f, s: report("bands", f, s), min_px=min_px,
+                                 cover=ink_cover)
         color_precision, layer_difference = 8, 1   # keep every band as its own layer
     report("trace", 0.0, "这一步无法细分，请稍候")
     cfg = vtracer.Config(filter_speckle=filter_speckle, layer_difference=layer_difference,

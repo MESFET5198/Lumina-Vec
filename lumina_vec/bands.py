@@ -128,7 +128,7 @@ def merge_specks(labels, rgb, max_area=48, keep_de=0.10, iters=2):
     return labels
 
 
-def printable_labels(labels, min_px, rgb=None, distinct_de=0.07, narrow_frac=0.5, group_de=0.05):
+def printable_labels(labels, min_px, rgb=None, distinct_de=0.07, narrow_frac=0.5, group_de=0.05, cover=None):
     """Print mode: decide per WHOLE colour region, not per pixel (per-pixel decisions chopped one
     line into printable/unprintable pieces -> dotted lines).
       - mostly-wide region: keep its wide part, slivers go to neighbours (as before);
@@ -211,8 +211,29 @@ def printable_labels(labels, min_px, rgb=None, distinct_de=0.07, narrow_frac=0.5
     return out
 
 
+def visible_cleanup(labels, cover, min_px):
+    """Lines are printed on top of the colour layer. What prints of a colour region is only the
+    part NOT under a line, so lines can cut fills into slivers and pockets narrower than one
+    extrusion. Clean the visible pieces: per colour, open the visible mask; leftover visible
+    slivers take the label of the nearest surviving visible pixel."""
+    from scipy import ndimage as ndi
+    d = int(math.ceil(min_px))
+    if d < 2 or cover is None or not cover.any():
+        return labels
+    vis = ~cover
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (d, d))
+    keep = np.zeros(labels.shape, bool)
+    for c in np.unique(labels[vis]):
+        keep |= cv2.morphologyEx(((labels == c) & vis).astype(np.uint8), cv2.MORPH_OPEN, k) > 0
+    sliver = vis & ~keep
+    if not sliver.any() or not keep.any():
+        return labels
+    _, (iy, ix) = ndi.distance_transform_edt(~keep, return_indices=True)
+    return np.where(sliver, labels[iy, ix], labels)
+
+
 def posterize(rgb, k=112, vote_sigma=1.0, l_weight=1.3, c_weight=2.0, edge_thr=0.4,
-              blur_sigma=0.0, smooth_src=None, speck_area=48, speck_keep_de=0.10, k_detail=48, progress=None, min_px=0, **_):
+              blur_sigma=0.0, smooth_src=None, speck_area=48, speck_keep_de=0.10, k_detail=48, progress=None, min_px=0, cover=None, **_):
     """Return (posterised rgb, palette hex list).
     blur_sigma>0: low-contrast pixels are labelled from a Gaussian-blurred copy (smooth
     contours); vote only among low-contrast pixels so bands don't eat lines."""
@@ -241,6 +262,7 @@ def posterize(rgb, k=112, vote_sigma=1.0, l_weight=1.3, c_weight=2.0, edge_thr=0
     if min_px:
         step(0.92, "可打印性")
         labels = printable_labels(labels, min_px, rgb)
+        labels = visible_cleanup(labels, cover, min_px)
     # palette colour = median of the source pixels in each final label
     used = np.unique(labels)
     flat_l, flat_s = labels.ravel(), rgb.reshape(-1, 3)

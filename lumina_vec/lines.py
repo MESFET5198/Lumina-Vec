@@ -291,11 +291,17 @@ def model_line_mask(rgb, lines, line_thr=0.4, fill_px=7, rel_thr=0.04, win=21, m
     return keep[cc]
 
 
-def stroke_mask(rgb, lines, rel_thr=0.06, win=21, line_thr=0.4, keep_frac=0.3, max_width=16, min_area=15):
-    """Which pixels belong to drawn strokes: original pixels darker than their surroundings
-    (true width), kept per component only where the model sees a line, plus the model's own
-    line pixels to bridge gaps the original leaves (grain, anti-aliasing)."""
+def stroke_mask(rgb, lines, rel_thr=0.06, win=21, line_thr=0.4, keep_frac=0.3, max_width=16, min_area=15,
+                min_len=6):
+    """Which pixels belong to drawn strokes.
+    - backbone: original pixels darker than their surroundings (true position and width), kept
+      per component only where the line model agrees;
+    - bridges: model-only line pieces are added ONLY where they connect two backbone strokes
+      (fills gaps that made lines dashed). Standalone model lines are dropped: the model also
+      draws colour boundaries (iris / pupil edges) that the artist never inked;
+    - strokes whose centreline is shorter than min_len are dropped (specks, stray tips)."""
     from .color import srgb_to_oklab
+    from skimage.morphology import skeletonize
     L = srgb_to_oklab(rgb)[..., 0].astype(np.float32)
     med = cv2.medianBlur(np.clip(L * 255, 0, 255).astype(np.uint8), win).astype(np.float32) / 255
     dark = ((med - L) > rel_thr).astype(np.uint8)
@@ -306,10 +312,34 @@ def stroke_mask(rgb, lines, rel_thr=0.06, win=21, line_thr=0.4, keep_frac=0.3, m
     n, cc, st, _ = cv2.connectedComponentsWithStats(dark, connectivity=8)
     hit = np.bincount(cc.ravel(), weights=near.ravel(), minlength=n)
     keep = (hit / np.maximum(st[:, cv2.CC_STAT_AREA], 1) >= keep_frac); keep[0] = False
-    m = keep[cc] | (model > 0)
+    back = keep[cc]
+    # bridges: model-only pieces touching >= 2 distinct backbone strokes
+    bcc_n, bcc = cv2.connectedComponents(back.astype(np.uint8), connectivity=8)
+    cand = (model > 0) & ~back
+    m = back.copy()
+    if cand.any() and bcc_n > 2:
+        cn, ccand = cv2.connectedComponents(cand.astype(np.uint8), connectivity=8)
+        touch = cv2.dilate(bcc.astype(np.float32), np.ones((3, 3), np.uint8)).astype(np.int64)
+        touch_min = (-cv2.dilate((-bcc.astype(np.float32)) * (bcc > 0) + (bcc == 0) * -1e9,
+                                 np.ones((3, 3), np.uint8))).astype(np.int64)
+        sel = (ccand > 0) & (touch > 0)
+        ids = ccand[sel]
+        hi = np.zeros(cn, np.int64); lo = np.full(cn, np.iinfo(np.int64).max)
+        np.maximum.at(hi, ids, touch[sel])
+        tm = touch_min[sel]; ok = tm > 0
+        np.minimum.at(lo, ids[ok], tm[ok])
+        bridge = (hi != lo) & (hi > 0) & (lo < np.iinfo(np.int64).max); bridge[0] = False
+        m |= bridge[ccand]
+    # drop short strokes
     n, cc, st, _ = cv2.connectedComponentsWithStats(m.astype(np.uint8), connectivity=8)
     big = np.zeros(n, bool); big[1:] = st[1:, cv2.CC_STAT_AREA] >= min_area
-    return big[cc]
+    m = big[cc]
+    if min_len > 0 and m.any():
+        n, cc = cv2.connectedComponents(m.astype(np.uint8), connectivity=8)
+        slen = np.bincount(cc[skeletonize(m)], minlength=n)
+        ok = slen >= min_len; ok[0] = False
+        m = ok[cc]
+    return m
 
 
 def redraw_strokes(mask, smooth_px=6.0, min_radius=0.0, ss=2):
@@ -325,6 +355,7 @@ def redraw_strokes(mask, smooth_px=6.0, min_radius=0.0, ss=2):
     w = cv2.GaussianBlur((dt * skel).astype(np.float32), (0, 0), smooth_px)
     s = cv2.GaussianBlur(skel.astype(np.float32), (0, 0), smooth_px)
     r = np.where(skel, w / np.maximum(s, 1e-6), 0)
+    r = np.minimum(r, dt + 0.5)          # smoothing may thin a stroke, never fatten it
     r = np.maximum(r, min_radius)
     H, W = m.shape
     out = np.zeros((H * ss, W * ss), np.uint8)
