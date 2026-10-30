@@ -51,3 +51,68 @@ def trace_ink(rgb, mask, sigma=1.0, simplify=1.0, ss=2):
             p = p.replace("<path", f'<path transform="scale({1/ss})"', 1)
         out.append(p)
     return out
+
+
+def _trace_ss_mask(m_ss, ss, color, simplify=1.0):
+    """Trace an already-supersampled binary mask in one colour; paths scaled back by 1/ss."""
+    img = np.where(m_ss, 0, 255).astype(np.uint8)
+    h, w = img.shape
+    svg = vtracer.Config(clustering="bw", filter_speckle=4 * ss, simplify=simplify * ss, mode="spline") \
+        .convert_pixels(np.dstack([img, img, img, np.full((h, w), 255, np.uint8)]).tobytes(), w, h)
+    col = "#%02x%02x%02x" % tuple(int(v) for v in color)
+    out = []
+    for p in re.findall(r"<path\b[^>]*/>", svg):
+        if re.search(r'fill="#(fff|ffffff)"', p, re.I):
+            continue
+        p = re.sub(r'\sfill="[^"]*"', f' fill="{col}"', p)
+        tr = re.search(r'transform="translate\(([-\d.]+),\s*([-\d.]+)\)"', p)
+        if tr:
+            p = p.replace(tr.group(0), f'transform="scale({1/ss}) translate({tr.group(1)},{tr.group(2)})"')
+        else:
+            p = p.replace("<path", f'<path transform="scale({1/ss})"', 1)
+        out.append(p)
+    return out
+
+
+def trace_lines(rgb, strokes, redrawn_ss, ss=2, merge_de=0.06, max_colors=12, simplify=1.0):
+    """Trace redrawn strokes (supersampled mask) with per-stroke colours: each connected stroke
+    takes the median colour of its original pixels; colours closer than merge_de (OKLab) share a
+    group so similar lines become one path set / one filament."""
+    from .color import srgb_to_oklab
+    if not redrawn_ss.any():
+        return []
+    n, cc = cv2.connectedComponents(redrawn_ss.astype(np.uint8), connectivity=8)
+    H, W = strokes.shape
+    # colour per redrawn component from original stroke pixels under it
+    cc_lo = cc[ss // 2::ss, ss // 2::ss][:H, :W]
+    sel = strokes & (cc_lo > 0)
+    ids = cc_lo[sel]; px = rgb[sel].astype(np.float32)
+    cols = np.zeros((n, 3), np.float32); cnt = np.bincount(ids, minlength=n).astype(np.float32)
+    order = np.argsort(ids, kind="stable"); ids_s = ids[order]; px_s = px[order]
+    b = np.searchsorted(ids_s, np.arange(n + 1))
+    for i in range(1, n):
+        if b[i + 1] > b[i]:
+            cols[i] = np.median(px_s[b[i]:b[i + 1]], 0)
+        else:
+            cols[i] = np.median(rgb[strokes], 0) if strokes.any() else 0
+    area = np.bincount(cc.ravel(), minlength=n)
+    lab = srgb_to_oklab(cols[None].astype(np.uint8))[0]
+    centers, members = [], []
+    for i in np.argsort(-area):
+        if i == 0:
+            continue
+        if centers:
+            d = np.sqrt(((np.array(centers) - lab[i]) ** 2).sum(1)); j = int(d.argmin())
+            if d[j] < merge_de or len(centers) >= max_colors:
+                members[j].append(i); continue
+        centers.append(lab[i]); members.append([i])
+    grp = np.full(n, -1); 
+    for g, ms in enumerate(members):
+        grp[np.array(ms)] = g
+    gmap = grp[cc]
+    out = []
+    for g, ms in enumerate(members):
+        w = area[ms].astype(np.float64)
+        col = (cols[ms] * w[:, None]).sum(0) / w.sum()
+        out += _trace_ss_mask(gmap == g, ss, col, simplify)
+    return out

@@ -12,5 +12,7 @@ COPY webui.py index.html /app/
 RUN mkdir -p /app/weights /data/uploads /data/outputs
 ARG MODEL_URL=https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-animevideov3.pth
 RUN python -c "import urllib.request; urllib.request.urlretrieve('$MODEL_URL','/app/weights/realesr-animevideov3.pth')"
+ARG LINE_MODEL_URL=https://huggingface.co/lllyasviel/Annotators/resolve/main/netG.pth
+RUN python -c "import urllib.request; urllib.request.urlretrieve('$LINE_MODEL_URL','/app/weights/netG.pth')"
 EXPOSE 8080
 CMD ["gunicorn","-w","1","-b","0.0.0.0:8080","--timeout","600","webui:app"]
