@@ -6,7 +6,7 @@ services:
     ports:
       - "8091:8080"
     volumes:
-      - ./data:/data
+      - ./data:/data   # converted files; change to any host path
     environment:
       - TZ=Asia/Shanghai
     mem_limit: 8g

@@ -2,7 +2,7 @@ FROM python:3.11-slim-bookworm
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=4
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
-ENV HTTP_PROXY=$HTTP_PROXY HTTPS_PROXY=$HTTPS_PROXY
+# proxy is build-time only: HTTP(S)_PROXY build args reach RUN steps but are not kept in the image
 RUN apt-get -o Acquire::http::Proxy=$HTTP_PROXY update && apt-get -o Acquire::http::Proxy=$HTTP_PROXY install -y --no-install-recommends libcairo2 && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY requirements.txt .

@@ -2,7 +2,11 @@
 
 把二次元插画转成 SVG，用于导入 [Lumina-Layers](https://github.com/lumina-layer-studio/Lumina-Layers) 做多色叠层 3D 打印。处理流程是：AI 去颗粒 → 明暗分层 → AI 线条层 → vtracer 描摹，另有专门针对打印的清理模式。
 
-![示例](docs/full_qipao_shading.jpg)
+| 带颗粒的平涂（`shading`） | 厚涂（`shading-detail`） | 平涂赛璐璐（`cel`） |
+|---|---|---|
+| ![](docs/example_qipao.jpg) | ![](docs/example_raiden.jpg) | ![](docs/example_beach.jpg) |
+
+<sub>每张图左半是原图，右半是 Lumina-Vec 的转换结果；最右侧为局部放大对比。示例插画版权归原作者所有，仅用于效果对比。</sub>
 
 ## 快速开始
 
@@ -86,4 +90,5 @@ python -m lumina_vec.gcodecheck a.gcode b.gcode               # 切片后：对�
 - [vtracer](https://github.com/visioncortex/vtracer)：MIT
 - [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) `realesr-animevideov3`：BSD-3-Clause
 - [ControlNet Annotators](https://huggingface.co/lllyasviel/Annotators) `lineart_anime`（`netG.pth`）：许可见上游仓库
-- 模型权重不随仓库分发，需要单独下载；测试原图和参考 SVG 不包含在仓库中
+- 模型权重不随仓库分发，需要单独下载
+- `docs/` 中的示例插画版权归原作者所有，仅用于展示转换效果
