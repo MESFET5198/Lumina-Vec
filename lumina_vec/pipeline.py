@@ -26,7 +26,8 @@ PRESETS = {
                     filter_speckle=4, layer_difference=10, simplify=1.5, ink=True, **_BANDS),
     # painterly / detailed art (light grain, fine texture) + shading bands
     "shading-detail": dict(pre_down=2.0, work_scale=1.0, ms_sp=6, ms_sr=10,
-                           filter_speckle=4, layer_difference=16, simplify=1.0, ink=True, **_BANDS),
+                           filter_speckle=4, layer_difference=16, simplify=1.0, ink=False, **_BANDS),
+    # ^ clean painterly art: its own lines are already clean; redrawing them made eyes/lashes heavier
     # clean cel/flat-colour art (hard-edged fills): no gradient smoothing (it put halos around
     # highlights), cutout tracing (shared edges, no slivers), fewer colours
     "cel": dict(pre_down=2.0, work_scale=1.0, ms_sp=6, ms_sr=10, filter_speckle=4, layer_difference=16,

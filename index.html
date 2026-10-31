@@ -169,7 +169,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
         <div class="field">
           <label>线条层</label>
           <div class="seg" id="ink"><button data-v="" class="on">自动</button><button data-v="1">开</button><button data-v="0">关</button></div>
-          <div class="hint">自动：按预设（Shading / Shading Detail / Cel 默认开启）。</div>
+          <div class="hint">自动：颗粒重的图（Shading）和平涂图（Cel）开启；干净的厚涂/渐变插画（Shading Detail）关闭，原图线条已经够干净。</div>
         </div>
       </details>
     </div>
@@ -213,7 +213,7 @@ const $ = s => document.querySelector(s);
 const PRESETS = [
   ['auto','自动','按颗粒程度、是否平涂、尺寸自动选择',true],
   ['shading','Shading','颗粒重的图；明暗分层 + AI 线条'],
-  ['shading-detail','Shading Detail','有明暗渐变的插画、厚涂；明暗分层 + AI 线条'],
+  ['shading-detail','Shading Detail','有明暗渐变的插画、厚涂；明暗分层，保留原图线条'],
   ['cel','Cel 平涂','干净的平涂赛璐璐；硬边色块、无晕边、碎块最少'],
   ['illustration','Illustration','不分层，色块最少、文件最小'],
   ['detail','Detail','不分层，保留更多细节'],
