@@ -1,191 +1,89 @@
-# Lumina-Vec：面向叠色 3D 打印的 AI 辅助矢量化
+# Lumina-Vec
 
-把二次元插画转成 SVG，输出主要用于导入 Lumina-Layers 做多色叠层 3D 打印。目标是用开源组件加一个小型 AI 模型，达到接近 Vectorizer.AI 的效果，并且明暗过渡的边缘要平滑、能打印。
+把二次元插画转成 SVG，用于导入 [Lumina-Layers](https://github.com/lumina-layer-studio/Lumina-Layers) 做多色叠层 3D 打印。处理流程是：AI 去颗粒 → 明暗分层 → AI 线条层 → vtracer 描摹，另有专门针对打印的清理模式。
 
-![对比](docs/full_qipao_shading.jpg)
-![对比](docs/full_fox_shading.jpg)
-![对比](docs/full_maid_shading.jpg)
-<sub>每组从左到右：原图 · Vectorizer.AI · Lumina-Vec</sub>
+![示例](docs/full_qipao_shading.jpg)
 
-## 流程
+## 快速开始
 
+**Docker（含 Web UI）**
+
+```bash
+docker compose up -d --build      # 构建时会自动下载两个模型（约 220 MB）
+# 浏览器打开 http://<主机>:8091
 ```
-原图 ─► ① AI 去颗粒 ─► ② 均值漂移压平 ─► ③ 明暗分层 ─► ④ vtracer 描摹 ─► ⑤ 五官细节补回 ─► SVG
-```
 
-1. **AI 去颗粒**（`lumina_vec/denoise.py`）：先缩小 1/2，把颗粒平均掉；再用 Real-ESRGAN 动漫模型放大 4 倍，重新生成锐利的线稿。纯 CPU 运行。
-2. **压平**：均值漂移滤波，把放大后残留的笔刷纹理压成平涂色块。
-3. **明暗分层**（`lumina_vec/bands.py`）
-   - **为什么需要**：vtracer 靠合并相似的相邻像素来长出区域。在平滑渐变上，这种合并会一路连下去，最后变成一整块纯色。所以必须先显式量化颜色。
-   - **调色板**：在 OKLab 色彩空间做 k-means，取 112 色；另外为高对比像素单独分配 48 色，保证嘴、鼻子这些小线条有属于自己的颜色。
-   - **平滑的色带边界**：在渐变区，像素的归属由一张"避开线稿的模糊图"决定。离线稿越远，模糊半径越大，最大到 σ=12；越靠近线稿半径越小，这样不会在下巴边缘留下一圈浅色晕边。最后再做一次空间投票。得到的色带边界是平滑的等值线，而不是锯齿状的阶梯，3D 打印时可以直接用。
-   - **线稿和纹理保持原样**：强边缘上的像素保留逐像素的原始颜色。
-   - **小碎块的处理**：低对比度的小碎块并入相邻区域；高对比度的小块（瞳孔高光、鼻点）保留。
-3b. **轮廓线单独成层**（`lumina_vec/ink.py`，仅 `shading` 预设开启）：
-   - **为什么需要**：重颗粒图经过 AI 去颗粒后，线稿边缘仍然毛糙，描出来的轮廓粗细不均、呈锯齿状。
-   - **怎么做**：把细的、深色、低饱和的线条单独取出来。先 2 倍超采样，再高斯平滑、二值化，单独描摹后叠在色彩层之上。色彩层会延伸到线条底下，所以不会留缝。大面积的深色区域（比如黑发）不受影响，仍保留明暗。
-   - **只用于重颗粒图**：干净的图线条本来就平滑，而且线条较细，平滑处理反而会把线吃掉。可以用 `--ink 0/1` 手动开关。
-4. **描摹**：vtracer 1.0（stacked 分层 + 样条拟合）。
-5. **五官细节补回**（`lumina_vec/overlay.py`）
-   - **为什么需要**：vtracer 的层次聚类会把很小的色簇并入邻居。而一条 3 像素宽的嘴线，因为抗锯齿被拆成了约 10 种颜色、每种只有 1～3 像素，所以必然被吞掉。
-   - **怎么做**：按"与局部背景的对比度"重新检测这类小块，每块统一成一种颜色，单独描摹后叠加在最上层。
+Web UI 支持拖拽或粘贴上传、预设选择、打印尺寸，可以拖动对比线、滚轮放大检查结果，会显示转换进度，并保留最近的转换记录。
 
-## 结果
-
-指标的计算方式：与"原图做 σ=2 高斯模糊后的版本"比较，ΔE 为 OKLab 色差 ×100。
-
-| 图 | 工具 | ΔE↓ | SSIM↑ | 边缘 F1↑ | path 数 | 文件大小 |
-|---|---|---|---|---|---|---|
-| 旗袍：平涂，重度颗粒 | Vectorizer.AI | **1.93** | 0.898 | 0.809 | 1428 | 3.1 MB |
-| | Lumina-Vec `shading` | 2.07 | 0.895 | **0.820** | 10463 | 2.9 MB |
-| 狐耳：厚涂，纹理多 | Vectorizer.AI | **3.12** | **0.777** | 0.585 | 8588 | 15 MB |
-| | Lumina-Vec `shading-detail` | 3.44 | 0.760 | **0.613** | 18322 | 4.1 MB |
-| 女仆：干净的赛璐璐，3840×4800 | Vectorizer.AI | 2.50 | 0.892 | **0.604** | 3594 | 6.0 MB |
-| | Lumina-Vec `shading-detail --work-scale 0.5` | **2.41** | **0.898** | 0.599 | 12295 | 2.7 MB |
-
-**注意：指标会误导。** 最终参数都是靠局部肉眼比对选出来的。
-
-| 旗袍腿部的明暗 | 旗袍面部的五官 | 狐耳的嘴 | 女仆面部的明暗 |
-|---|---|---|---|
-| ![](docs/shading_qipao_leg.jpg) | ![](docs/shading_qipao_face.jpg) | ![](docs/detail_fox_mouth.jpg) | ![](docs/shading_maid_face.jpg) |
-
-### 主观评估
-- **明暗过渡**：色带边界平滑，过渡自然，在旗袍和女仆这两张图上观感好于 Vectorizer.AI。
-- **五官**：瞳孔高光、鼻点、嘴线都能保留下来。在狐耳这类五官极小的厚涂图上，鼻梁的高光线条仍会丢失。
-- **代价**：path 数是 Vectorizer.AI 的 2～7 倍，主要来自色带和细节补回层；不过文件大小反而更小。
-- **仍有差距**：小字（印章）是糊的；腮红变成了硬边色块；狐耳那张的眼睛内部细节偏少。
-
-## 用法
+**命令行**
 
 ```bash
 pip install numpy pillow opencv-python-headless scikit-image scipy
-pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install torch --index-url https://download.pytorch.org/whl/cpu      # 有 N 卡就换成 CUDA 版
 pip install --pre "vtracer==1.0.0a3"
 ./scripts/download_weights.sh
 
-python -m lumina_vec.pipeline in.png out.svg                 # 默认 auto：自动选预设、自动缩放大图（推荐）
-python -m lumina_vec.pipeline in.png out.svg --bands 48      # 减少颜色数（按打印需求选）
-python -m lumina_vec.pipeline in.png out.svg --preset shading          # 手动：平涂二次元，颗粒重
-python -m lumina_vec.pipeline in.png out.svg --preset shading-detail   # 手动：厚涂、细节多
-python -m lumina_vec.pipeline in.png out.svg --preset illustration     # 不分层：色块最少、文件最小
+python -m lumina_vec.pipeline in.png out.svg                           # 自动选预设
+python -m lumina_vec.pipeline in.png out.svg --print-mm 263            # 打印模式
 ```
 
-**在两台机器上分工跑（AI 步骤放到 N 卡主机上）**
+## 预设
+
+默认是 `auto`，会根据图片自动选择：
+
+| 预设 | 自动选择的条件 | 适合的图 | 线条层 |
+|---|---|---|---|
+| `shading` | 颗粒度 ≥ 4 | 带颗粒、噪点的平涂图 | 开 |
+| `cel` | 平缓渐变占比 < 0.18 | 干净的平涂赛璐璐 | 开 |
+| `shading-detail` | 其余情况 | 厚涂、带渐变的插画 | 关 |
+
+另外还有 `illustration`、`detail`、`flat` 三个不分层的旧预设，只能手动指定。大图会自动缩小处理，`shading` 上限 1400 万像素，其余 600 万像素。判断阈值只用 6 张测试图标定过，效果不对时可以手动指定 `--preset`。
+
+## 3D 打印模式
 
 ```bash
-# GPU 主机：需要安装 CUDA 版 torch（pip install torch --index-url https://download.pytorch.org/whl/cu121）
-python -m lumina_vec.denoise in.png in_clean.png          # 有 CUDA 时自动使用 GPU + fp16
-# 主力机：跳过 AI 步骤，直接用 GPU 主机上处理好的结果
-python -m lumina_vec.pipeline in.png out.svg --clean in_clean.png
+# 只打印一部分时：先裁切，--print-mm 填裁切后的图在打印时长边的尺寸
+python -m lumina_vec.pipeline crop.png out.svg --print-mm 263 --line-mm 0.42
 ```
 
-`--clean` 只替换 AI 去颗粒这一步。auto 模式仍然根据原图判断颗粒程度，所以第一个参数必须传原图。
+- 比一根挤出线还窄的色块和碎块会并入相邻颜色，画面保持完整、不留空洞；
+- 细线（轮廓、发丝、嘴）不删，而是整条加粗到线宽，所以线条会比原图略粗；
+- 颜色数降到 56，描摹改用共边模式；
+- 预览用的遮缝描边导入 Lumina 时会被自动删掉。
 
-**各步骤耗时**（狐耳图，1600×2460，2 核云容器）：Real-ESRGAN 约 14 秒、均值漂移约 5 秒、明暗分层约 20 秒（之前约 70 秒，已优化）、vtracer 约 20 秒、细节补回约 2 秒，总计约 67 秒（之前约 124 秒）。
+实测同一张图：预估打印时间从 10h04m 降到 8h56m，周长小于 2 mm 的外墙小圈减少约一半。切片端把回抽最小距离调到 4.5 mm 后，降到 8h28m。
 
-**auto 模式的判断规则**
-- **颗粒程度**：原图灰度与其 3×3 中值滤波结果之间的平均差。≥ 4 时用 `shading`，否则用 `shading-detail`。三张测试图的值分别是：旗袍 8.8、狐耳 1.9、女仆 0.2。
-- **工作分辨率**：`shading` 的上限是 1400 万像素，`shading-detail` 的上限是 600 万像素，超过上限的图会自动缩小。
-- 选择结果会打印出来；单独指定的参数（例如 `--bands`、`--work-scale`）会覆盖 auto 的选择。
-- 阈值只用三张图标定过。遇到风格明显不同的图，自动选择未必合适，可以手动指定 `--preset`。
+检查工具：
 
-主要参数：
+```bash
+python -m lumina_vec.printcheck out.svg --print-mm 263       # 切片前：统计比挤出点还小的区域
+python -m lumina_vec.gcodecheck a.gcode b.gcode               # 切片后：对比小圈数、空驶、回抽和预估时间
+```
+
+## 常用参数
 
 | 参数 | 作用 |
 |---|---|
-| `bands` | 明暗分层的颜色数，0 表示关闭 |
-| `blur_sigma` | 渐变区的最大模糊半径：越大，色带边界越平滑 |
-| `vote_sigma` | 空间投票的半径 |
-| `l_weight` / `c_weight` | k-means 中明度和色度的权重。明度权重过高时，浅色皮肤会和白色归为一类，导致发灰 |
-| `edge_thr` | 高于这个边缘强度的像素保留原始颜色（保护线稿和纹理） |
-| `filter_speckle` | vtracer 的碎块过滤阈值，按边长计。设成 12 会吃掉瞳孔高光和鼻子 |
-| `pre_down` / `work_scale` | AI 处理前的缩小倍数 / 描摹时的工作分辨率倍数 |
+| `--preset` | `auto` / `shading` / `shading-detail` / `cel` / … |
+| `--bands N` | 颜色数，越少打印出来的区域越少 |
+| `--print-mm` / `--line-mm` | 打印尺寸（长边，mm）/ 挤出线宽，默认 0.42 |
+| `--ink 0/1` | 强制关闭或开启线条层 |
+| `--lines none` | 线条层不用 AI 模型，改按颜色规则找线 |
+| `--work-scale` | 处理时的分辨率倍数 |
+| `--clean img` | 使用其他机器上已做完 AI 去颗粒的图（见下） |
 
-评估工具（需要 Node + Playwright）：
+**把 AI 步骤放到 GPU 主机上跑**：先在 GPU 主机上运行 `python -m lumina_vec.denoise in.png clean.png`，再在主力机上运行 `python -m lumina_vec.pipeline in.png out.svg --clean clean.png`。不过 AI 步骤只占总耗时的约 20%，整体放到 GPU 主机上跑效果更明显。
 
-```bash
-python -m lumina_vec.evaluate original.png a.svg b.svg
-LVEC_REGIONS='{"face":[x0,y0,x1,y1]}' python -m lumina_vec.crops docs/cmp original.png a.svg.png b.svg.png
-```
+## 已知限制
 
-
-
-## 线条层（AI 线稿模型 + 中心线重绘）
-
-线条单独成层，叠在色块上方，色块会延伸到线条底下，不留缝。线条的生成分四步：
-1. **哪里是线**：用 ControlNet 的 `lineart_anime` 模型（`weights/netG.pth`，约 218 MB）判断。它是专门在动漫图上训练的，判断依据和颜色无关，所以对颗粒不敏感。
-2. **线有多宽**：看原图。比周围暗的像素算作线条，并且只保留模型也认为是线的部分。模型画出的线断开的地方，用模型自己的线补上。
-3. **重绘**：先提取中心线，再用距离变换得到每一处的半宽，沿着线把宽度平滑，最后在 2 倍分辨率下按"中心线 + 平滑后的宽度"重新画出来。这样线条天然平滑、粗细均匀，又保留了原图里的粗细变化。
-4. **每条线保留自己的颜色**：颜色接近的线（OKLab 色差 < 0.06）会合并成一组，避免每条线各占一种耗材。
-
-**默认只在 `shading`（颗粒重）和 `cel`（平涂）预设开启**。干净的厚涂、渐变插画（`shading-detail`）原图线条已经够干净，重绘反而会让睫毛、瞳孔这类细碎笔触变重，所以默认关闭，需要时可以用 `--ink 1` 或在 Web UI 里手动打开。
-
-没有 `netG.pth` 时，会自动退回原来的颜色规则（深色、低饱和、细）。用 `--lines none` 可以强制关闭模型。在打印模式下，线条的最小宽度等于挤出线宽。
-
-## 平涂图（`cel` 预设）
-
-auto 模式还会测一个指标：画面里"平缓渐变"像素的占比（先缩到约 100 万像素、做中值滤波去掉颗粒后再测）。占比低于 0.18 的判定为干净的平涂赛璐璐图，改用 `cel` 预设：
-- 关闭渐变平滑。这种图上的平滑会在硬边高光外面包一圈过渡色，形成晕边；
-- 用 cutout 描摹，相邻色块共用边界，不会产生碎缝；
-- 颜色数 48，关闭细节补回层；
-- 线条层照常开启。
-
-测试图（2000×2000 平涂，按 263 mm 打印检查）：
-
-| | shading-detail | cel | 参考 SVG |
-|---|---|---|---|
-| 小于一个挤出点的区域 | 3,606 | **572** | 207 |
-| 路径数 | 2,467 | 1,060 | 1,056 |
-| 色差 ΔE | 2.34 | 2.23 | 1.82 |
-
-五张测试图的平缓渐变占比：平涂 0.08，女仆 0.39，雷电 0.28，狐耳 0.53，旗袍 0.40（旗袍颗粒重，会先被判定为 `shading`）。
-
-## 3D 打印模式（`--print-mm`）
-
-切片软件会给 SVG 里的每一个小色块单独走一圈外墙，并伴随空驶和回抽。比一根挤出线还窄的色块打不出来，却会严重拖慢打印。
-
-实测一份 10 小时的 4 色 G-code：外墙小圈约 3.3 万个，其中一半周长不到 2 mm；回抽约 20 万次；空驶 1.1 km。对应的 SVG 中，**74% 的颜色区域比一个 0.42 mm 的挤出点还小**。另外，Lumina 自身不会过滤过窄或过小的几何，而是原样交给切片软件。
-
-```bash
-# 只打印一部分的话，先裁切，再填写裁切后图片长边的打印尺寸
-python -m lumina_vec.pipeline crop.png out.svg --print-mm 263 --line-mm 0.42
-python -m lumina_vec.printcheck out.svg --print-mm 263                  # 切片前检查
-python -m lumina_vec.gcodecheck before.gcode after.gcode                 # 切片后对比
-```
-
-打印模式会做这些处理：
-- **处理窄于一根挤出线的颜色碎片**：抗锯齿过渡色、细碎斑点、色带之间的细条，都交给相邻的颜色，图像保持完整覆盖，不会留下空洞。
-- **细线条加粗保留，而不是删掉**：比周围暗的窄条（嘴、鼻子、发丝、轮廓）整条均匀加粗到线宽，每条线统一用一种颜色。
-- **颜色数降到 56**：每多一种颜色就可能多一种耗材叠法，每一层会因此多出分界。
-- **vtracer 改用 `cutout` 镶嵌**：默认的 stacked 模式中，每个形状单独拟合曲线，曲线对不齐的地方会产生细缝，而 cutout 模式下相邻形状共用同一条边界。仅这一项就把比一个点还小的区域从约 4,200 个降到约 500 个。
-- **预览缝隙遮盖**：在每个色块前加一条同色、2px 的 `qq3d-gap-filler` 描边，格式与 Lumina 识别的完全一致。浏览器预览中共边色块之间的抗锯齿缝会被遮住；导入 Lumina 时，这些描边会被 Lumina 自动删除（已用 Lumina 自身的过滤代码验证），不会进入打印。
-- **关闭细节补回层**：能打印出来的细节已经保留在色块里了。
-
-测试图（1794×1794，按 263 mm 打印）：
-
-| | 普通模式 | 打印模式 |
-|---|---|---|
-| 小于一个 0.42 mm 点的区域 | 8,436 | **614** |
-| 路径数 | 5,158 | 2,537 |
-| 颜色数 | 211 | 105 |
-
-代价：比一根挤出线还小的细节（例如瞳孔的小高光）会消失，线条会比原图略粗。预览时色块之间可能看到细缝，这是浏览器抗锯齿造成的显示问题，实际几何是共边、没有缝隙的。
-
-## 实验记录
-
-| 方案 | 结果 |
-|---|---|
-| OKLab k-means + 众数滤波 + 无缝镶嵌 | 指标接近 Vectorizer.AI，但线稿碎裂 |
-| 调低 vtracer 的 `layer_difference` 来保留渐变 | 无效：渐变会被链式合并成一块 |
-| k-means 分层 + 全局平滑 | 有明暗过渡了，但毛衣纹理和发丝被抹掉 |
-| 只在低对比度区平滑 | 纹理保住了，但色带边缘呈锯齿状，没法打印 |
-| 用均值漂移后的图来定色带边界 | 均值漂移产生的平台是块状的，色带边界也跟着成块 |
-| 固定 σ 的模糊来定色带边界 | 边界平滑了，但线稿会渗进皮肤，下巴边缘出现一圈浅色晕边 |
-| **避开线稿、按距离调节模糊半径**（当前方案） | 色带平滑，也没有晕边 |
-| `filter_speckle=12` | 瞳孔高光、鼻子、嘴都被删掉 → 改为 4 |
-| 只按颜色区域的大小来找五官 | 抗锯齿把嘴拆成约 10 种颜色，每块只有 1～3 像素，检测不到 → 改为按对比度检测 |
+- 印章小字这类小于 2 mm 的细节会糊掉；腮红会变成硬边色块；
+- 带色差特效（红青描边）的图，打印模式下青色边可能会丢失；
+- 打印模式下，线条与色块交界处会残留零星 1～2 像素的点。按像素统计会算进碎块数，但实际打印影响很小；
+- 实现细节、实测数据和试过但放弃的方案，见 [docs/NOTES.md](docs/NOTES.md)。
 
 ## 依赖与许可
+
 - [vtracer](https://github.com/visioncortex/vtracer)：MIT
-- [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) 的 `realesr-animevideov3` 权重：BSD-3-Clause（不随仓库分发，需运行 `scripts/download_weights.sh` 下载）
-- 测试原图和 Vectorizer.AI 的输出不包含在仓库里，`docs/` 中只有比对截图
+- [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) `realesr-animevideov3`：BSD-3-Clause
+- [ControlNet Annotators](https://huggingface.co/lllyasviel/Annotators) `lineart_anime`（`netG.pth`）：许可见上游仓库
+- 模型权重不随仓库分发，需要单独下载；测试原图和参考 SVG 不包含在仓库中
