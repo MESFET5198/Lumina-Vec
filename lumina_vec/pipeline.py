@@ -140,6 +140,7 @@ def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_s
     palette = None
     ink_paths = []
     ink_cover = None
+    bright = None
     # print mode: smallest feature one `line_mm` extrusion can lay down, in working pixels
     min_px = line_mm * max(w, h) / print_mm if print_mm else 0.0
     hierarchical = hierarchical_mode or "stacked"
@@ -163,13 +164,26 @@ def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_s
             # print mode: a stroke shorter than a few extrusion widths prints as a blob
             im = stroke_mask(clean, lm, min_len=max(6, int(round(4 * min_px))) if min_px else 6)
             rd = redraw_strokes(im, min_radius=min_px / 2 if min_px else 0.0)
+            # lines never paint over highlights: pixels clearly lighter than their surroundings
+            from .color import srgb_to_oklab as _ok
+            _L = _ok(clean)[..., 0].astype(np.float32)
+            # highlights = SMALL blobs lighter than their surroundings (white top-hat). A median
+            # comparison also flagged ordinary fill next to every dark line, leaving slivers
+            _k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
+            bright = cv2.morphologyEx(_L, cv2.MORPH_TOPHAT, _k) > 0.10
+            bright = cv2.dilate(bright.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+            if blur_sigma <= 0:     # flat cel art: hard fills already keep highlights; protecting
+                bright[:] = False   # its white outlines/rims only leaves slivers beside lines
+            im &= ~bright
+            rd &= ~cv2.resize(bright.astype(np.uint8), (rd.shape[1], rd.shape[0]), interpolation=cv2.INTER_NEAREST).astype(bool)
             report("ink", 0.8, "描摹线条")
             ink_paths = trace_lines(clean, im, rd)
             im = im | (cv2.resize(rd.astype(np.uint8), (w, h), interpolation=cv2.INTER_AREA) > 0)
         else:                       # no line model: colour rule (dark, neutral, thin)
             im = ink_mask(clean)
             ink_paths = trace_ink(clean, im)
-        rgb, clean = fill_under(rgb, im), fill_under(clean, im)
+        sm_fill = blur_sigma > 0
+        rgb, clean = fill_under(rgb, im, bright, sm_fill), fill_under(clean, im, bright, sm_fill)
         ink_cover = im
     if bands:
         from .bands import posterize

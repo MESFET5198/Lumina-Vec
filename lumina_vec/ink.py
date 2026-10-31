@@ -18,13 +18,19 @@ def ink_mask(rgb, l_thr=0.36, c_thr=0.07, max_width=12, min_area=40):
     return keep[cc]
 
 
-def fill_under(rgb, mask):
-    """Replace masked pixels by the nearest unmasked pixel, so colour regions run under the ink."""
+def fill_under(rgb, mask, protect=None, smooth=True):
+    """Continue the colour under the ink smoothly (Telea inpainting). The earlier nearest-pixel
+    fill made hard Voronoi blocks that the band step then kept as a mosaic of fragments."""
     if not mask.any():
         return rgb
-    grow = cv2.dilate(mask.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
-    _, (iy, ix) = ndi.distance_transform_edt(grow, return_indices=True)
-    return rgb[iy, ix]
+    m = cv2.dilate(mask.astype(np.uint8), np.ones((3, 3), np.uint8))
+    if protect is not None:
+        m &= (~protect).astype(np.uint8)
+    if not smooth:       # flat cel art: hard fills, nearest colour keeps edges crisp
+        from scipy import ndimage as ndi
+        _, (iy, ix) = ndi.distance_transform_edt(m > 0, return_indices=True)
+        return rgb[iy, ix]
+    return cv2.inpaint(np.ascontiguousarray(rgb), m, 3, cv2.INPAINT_TELEA)
 
 
 def trace_ink(rgb, mask, sigma=1.0, simplify=1.0, ss=2):
@@ -100,7 +106,11 @@ def trace_lines(rgb, strokes, redrawn_ss, ss=2, merge_de=0.06, max_colors=12, si
     b2 = np.searchsorted(sid_s, np.arange(n + 1))
     for i in range(1, n):
         if b2[i + 1] > b2[i]:
-            cols[i] = np.median(spx_s[b2[i]:b2[i + 1]], 0)
+            seg = spx_s[b2[i]:b2[i + 1]]
+            if len(seg) >= 6:   # darker half of the centreline: thin lines' centres are still anti-aliased
+                Lseg = srgb_to_oklab(seg[None].astype(np.uint8))[0][:, 0]
+                seg = seg[Lseg <= np.median(Lseg)]
+            cols[i] = np.median(seg, 0)
         elif b[i + 1] > b[i]:
             cols[i] = np.median(px_s[b[i]:b[i + 1]], 0)
         else:
