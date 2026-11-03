@@ -201,6 +201,11 @@ def _load(kind, weights_dir="weights"):
                                                                        track_running_stats=False), use_dropout=False)
         sd = torch.load(f"{weights_dir}/netG.pth", map_location="cpu")
         sd = {k.replace("module.", ""): v for k, v in sd.items()}
+    elif kind == "manga":           # MangaLineExtraction (Li et al. 2017): the artist's ink lines
+        from .manga_net import res_skip
+        net = res_skip()
+        sd = torch.load(f"{weights_dir}/erika.pth", map_location="cpu")
+        sd = {k.replace("module.", ""): v for k, v in sd.items()}
     else:
         net = Generator(3, 1, 3)
         sd = torch.load(f"{weights_dir}/sk_model.pth", map_location="cpu")
@@ -222,6 +227,9 @@ def line_map(rgb, kind="anime", detect_long=2048, weights_dir="weights"):
     x = torch.from_numpy(img).permute(2, 0, 1)[None].to(DEVICE)
     if kind == "anime":
         y = net(x / 127.5 - 1.0)[0, 0] * 0.5 + 0.5      # 1 = paper, 0 = ink
+    elif kind == "manga":           # grey 0..255 in, 0..255 out (255 = paper)
+        g = (x[:, 0:1] * 0.299 + x[:, 1:2] * 0.587 + x[:, 2:3] * 0.114)
+        y = net(g)[0, 0] / 255.0
     else:
         y = net(x / 255.0)[0, 0]                       # 1 = paper, 0 = ink
     y = y.clamp(0, 1).cpu().numpy()
