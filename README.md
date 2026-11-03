@@ -1,12 +1,14 @@
 # Lumina-Vec
 
-把二次元插画转成 SVG，用于导入 [Lumina-Layers](https://github.com/lumina-layer-studio/Lumina-Layers) 做多色叠层 3D 打印。处理流程是：AI 去颗粒 → 明暗分层 → AI 线条层 → 色块描摹（亚像素等值线 + 贝塞尔），另有专门针对打印的清理模式。
+[![最新版本](https://img.shields.io/github/v/release/MESFET5198/Lumina-Vec?label=%E6%9C%80%E6%96%B0%E7%89%88%E6%9C%AC)](https://github.com/MESFET5198/Lumina-Vec/releases/latest)
+
+把二次元插画转成 SVG，用于导入 [Lumina-Layers](https://github.com/lumina-layer-studio/Lumina-Layers) 做多色叠层 3D 打印。处理流程是：AI 去颗粒 → 明暗分层 → AI 线条层（两个线稿模型）→ 色块描摹（亚像素等值线 + 贝塞尔），另有专门针对打印的清理模式。各版本的改动见 [CHANGELOG](CHANGELOG.md) 或 [Releases](https://github.com/MESFET5198/Lumina-Vec/releases)。
 
 | 带颗粒的平涂（`shading`） | 厚涂（`shading-detail`） | 平涂赛璐璐（`cel`） |
 |---|---|---|
 | ![](docs/example_qipao.jpg) | ![](docs/example_raiden.jpg) | ![](docs/example_beach.jpg) |
 
-<sub>每张图左半是原图，右半是 Lumina-Vec 的转换结果；最右侧为局部放大对比。示例插画版权归原作者所有，仅用于效果对比。</sub>
+<sub>每张图左半是原图，右半是 Lumina-Vec 的转换结果；最右侧为局部放大对比。示例由 v0.7 生成。示例插画版权归原作者所有，仅用于效果对比。</sub>
 
 ## 快速开始
 
@@ -17,7 +19,9 @@ docker compose up -d --build      # 构建时会自动下载三个模型（约 3
 # 浏览器打开 http://<主机>:8091
 ```
 
-Web UI 支持拖拽或粘贴上传、预设选择、打印尺寸，可以拖动对比线、滚轮放大检查结果，会显示转换进度，并保留最近的转换记录。
+Web UI 支持拖拽或粘贴上传、预设选择、打印尺寸和精细模式，高级选项里可以调颜色数、线条层、线条风格、细纹保护和色块描摹方法。结果可以拖动对比线、滚轮放大检查，会显示转换进度，并保留最近的转换记录。
+
+更新：`git pull` 后重新执行 `docker compose up -d --build`。
 
 **命令行**
 
@@ -41,6 +45,8 @@ python -m lumina_vec.pipeline in.png out.svg --fine                     # 精细
 | `shading` | 颗粒度 ≥ 4 | 带颗粒、噪点的平涂图 | 开 |
 | `cel` | 平缓渐变占比 < 0.18 | 干净的平涂赛璐璐 | 开 |
 | `shading-detail` | 其余情况 | 厚涂、带渐变的插画 | 关 |
+
+线条层开启时，默认使用 v3 线条（见下）；打印模式固定用旧方法，保证最小线宽。轮廓淡、线条细的厚涂图（比如精灵、狐耳那类），建议打开精细模式或手动开启线条层。
 
 另外还有 `illustration`、`detail`、`flat` 三个不分层的旧预设，只能手动指定。大图会自动缩小处理，`shading` 上限 1400 万像素，其余 600 万像素。判断阈值只用 6 张测试图标定过，效果不对时可以手动指定 `--preset`。
 
@@ -100,7 +106,13 @@ python -m lumina_vec.gcodecheck a.gcode b.gcode               # 切片后：对�
 - 印章小字这类小于 2 mm 的细节会糊掉；腮红会变成硬边色块；
 - 带色差特效（红青描边）的图，打印模式下青色边可能会丢失；
 - 打印模式下，线条与色块交界处会残留零星 1～2 像素的点。按像素统计会算进碎块数，但实际打印影响很小；
+- 精细模式：白发等浅色区域上的淡线有时会断开；眼睛内部的细节仍不如商业工具；路径数较多（1000 px 级的图约 1.4 万条）；
+- 厚涂图开启线条层时，眼睛高光可能变弱（雷电那类图建议保持关闭）；
 - 实现细节、实测数据和试过但放弃的方案，见 [docs/NOTES.md](docs/NOTES.md)。
+
+## 版本与发布
+
+版本号用 `0.x`：加功能升第二位，只修问题升第三位。发布方法：在 `.github/release-notes/versions.txt` 加一行"版本号 提交"，并写好 `.github/release-notes/<版本号>.md`（第一行是标题），推到 `main` 后，GitHub Actions 会自动打 tag 并建 Release。在网页上手动打 `v*` tag 也会触发。
 
 ## 依赖与许可
 
