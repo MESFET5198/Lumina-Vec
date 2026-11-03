@@ -100,7 +100,7 @@ def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_s
               filter_speckle=12, layer_difference=10, simplify=1.5, color_precision=6, ai=True,
               clean=None,
               bands=0, vote_sigma=3.0, l_weight=1.3, c_weight=2.0, blur_sigma=12.0, edge_thr=0.4, detail_overlay=True, ink=False, progress=None,
-              print_mm=0.0, line_mm=0.42, lines="anime", weights_dir=None, hierarchical_mode=None):
+              print_mm=0.0, line_mm=0.42, lines="anime", weights_dir=None, hierarchical_mode=None, contour_lines=True):
     W, H = img.size
     # stage cost model (seconds per megapixel, CPU), calibrated on two test images; the AI step
     # scales with its (downscaled) input, everything else with the working resolution
@@ -163,7 +163,8 @@ def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_s
             lm = line_map(clean, "anime", detect_long=min(3072, max(clean.shape[:2])), weights_dir=wdir)
             report("ink", 0.6, "重绘线条")
             # print mode: a stroke shorter than a few extrusion widths prints as a blob
-            im = stroke_mask(clean, lm, min_len=max(6, int(round(4 * min_px))) if min_px else 6)
+            im = stroke_mask(clean, lm, min_len=max(6, int(round(4 * min_px))) if min_px else 6,
+                             rel_thr=0.06 if not contour_lines else 0.035)
             rd = redraw_strokes(im, min_radius=min_px / 2 if min_px else 0.0)
             # lines never paint over highlights: pixels clearly lighter than their surroundings
             from .color import srgb_to_oklab as _ok
@@ -178,8 +179,23 @@ def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_s
             im &= ~bright
             rd &= ~cv2.resize(bright.astype(np.uint8), (rd.shape[1], rd.shape[0]), interpolation=cv2.INTER_NEAREST).astype(bool)
             report("ink", 0.8, "描摹线条")
-            ink_paths = trace_lines(clean, im, rd)
-            im = im | (cv2.resize(rd.astype(np.uint8), (w, h), interpolation=cv2.INTER_AREA) > 0)
+            if contour_lines:
+                # geometry from CONTINUOUS values of the original (its anti-aliasing places the
+                # edge sub-pixel); the AI-cleaned image only where the original is grainy
+                from .ink import trace_lines_contour
+                from .contour import ink_field
+                geo = clean if grain_level(img) >= GRAIN_THRESHOLD else \
+                    np.asarray(img.convert("RGB").resize((w, h), Image.LANCZOS))
+                fld = ink_field(geo, im)
+                fld[bright] = 0
+                if min_px:      # print mode: never thinner than one extrusion line
+                    rd_cov = cv2.resize(rd.astype(np.float32), (w, h), interpolation=cv2.INTER_AREA)
+                    fld = np.maximum(fld, rd_cov)
+                ink_paths = trace_lines_contour(geo, fld, im)
+                im = im | (fld > 0.3)
+            else:
+                ink_paths = trace_lines(clean, im, rd)
+                im = im | (cv2.resize(rd.astype(np.uint8), (w, h), interpolation=cv2.INTER_AREA) > 0)
         else:                       # no line model: colour rule (dark, neutral, thin)
             im = ink_mask(clean)
             ink_paths = trace_ink(clean, im)

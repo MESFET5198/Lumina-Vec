@@ -136,3 +136,52 @@ def trace_lines(rgb, strokes, redrawn_ss, ss=2, merge_de=0.06, max_colors=12, si
         col = (cols[ms] * w[:, None]).sum(0) / w.sum()
         out += _trace_ss_mask(gmap == g, ss, col, simplify)
     return out
+
+
+def trace_lines_contour(color_rgb, field, strokes, merge_de=0.06, max_colors=12, tol=0.6):
+    """Contour-based line layer: groups strokes by colour (core = darker half of the centreline),
+    then each group's outline is the sub-pixel 0.5 iso-contour of the continuous ink `field`,
+    fitted with cubic Béziers (contour.field_paths)."""
+    from .color import srgb_to_oklab
+    from .contour import field_paths
+    from skimage.morphology import skeletonize
+    m = (field > 0.35) | strokes
+    n, cc = cv2.connectedComponents(m.astype(np.uint8), connectivity=8)
+    if n <= 1:
+        return []
+    skel = skeletonize(m) & (cc > 0)
+    sid = cc[skel]; spx = color_rgb[skel].astype(np.float32)
+    o = np.argsort(sid, kind="stable"); sid = sid[o]; spx = spx[o]
+    b = np.searchsorted(sid, np.arange(n + 1))
+    cols = np.zeros((n, 3), np.float32)
+    for i in range(1, n):
+        seg = spx[b[i]:b[i + 1]]
+        if len(seg) == 0:
+            seg = color_rgb[cc == i].astype(np.float32)
+        if len(seg) >= 6:
+            Ls = srgb_to_oklab(seg[None].astype(np.uint8))[0][:, 0]
+            seg = seg[Ls <= np.median(Ls)]
+        cols[i] = np.median(seg, 0)
+    area = np.bincount(cc.ravel(), minlength=n)
+    lab = srgb_to_oklab(cols[None].astype(np.uint8))[0]
+    centers, members = [], []
+    for i in np.argsort(-area):
+        if i == 0:
+            continue
+        if centers:
+            d = np.sqrt(((np.array(centers) - lab[i]) ** 2).sum(1)); j = int(d.argmin())
+            if d[j] < merge_de or len(centers) >= max_colors:
+                members[j].append(i); continue
+        centers.append(lab[i]); members.append([i])
+    grp = np.full(n, -1)
+    for g, ms in enumerate(members):
+        grp[np.array(ms)] = g
+    gmap = grp[cc]
+    out = []
+    for g, ms in enumerate(members):
+        w = area[ms].astype(np.float64)
+        col = (cols[ms] * w[:, None]).sum(0) / w.sum()
+        p = field_paths(field, gmap == g, col, tol=tol)
+        if p:
+            out.append(p)
+    return out
