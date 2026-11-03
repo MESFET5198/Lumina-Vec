@@ -1,13 +1,17 @@
-# Creates a GitHub Release for every v* tag that has notes in .github/release-notes/<tag>.md
-# (first line = title, rest = body). Runs on tag push and by hand (Actions -> Release -> Run);
-# tags that already have a release are skipped, so it is safe to re-run.
+# Creates a GitHub Release (and its tag) for each line of .github/release-notes/versions.txt
+# ("<tag> <commit>"), with notes from .github/release-notes/<tag>.md (first line = title,
+# rest = body). Runs when that list changes on main, on a pushed v* tag, or by hand
+# (Actions -> Release -> Run workflow). Existing releases are skipped: safe to re-run.
 name: Release
 on:
   push:
+    branches: [main]
+    paths: [".github/release-notes/**"]
     tags: ["v*"]
   workflow_dispatch:
 permissions:
   contents: write
+concurrency: release
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -20,14 +24,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          latest=$(git tag -l 'v*' --sort=-v:refname | head -1)
-          for tag in $(git tag -l 'v*' --sort=v:refname); do
+          list=.github/release-notes/versions.txt
+          latest=$(grep -v '^#' "$list" | awk 'NF' | tail -1 | cut -d' ' -f1)
+          grep -v '^#' "$list" | awk 'NF' | while read -r tag sha; do
             notes=".github/release-notes/$tag.md"
-            [ -f "$notes" ] || { echo "skip $tag (no notes)"; continue; }
             if gh release view "$tag" >/dev/null 2>&1; then echo "exists $tag"; continue; fi
             title="$tag · $(head -1 "$notes")"
             tail -n +3 "$notes" > /tmp/body.md
             if [ "$tag" = "$latest" ]; then flag=--latest; else flag=--latest=false; fi
-            gh release create "$tag" --verify-tag --title "$title" --notes-file /tmp/body.md $flag
-            echo "created $tag"
+            gh release create "$tag" --target "$sha" --title "$title" --notes-file /tmp/body.md $flag
+            echo "created $tag -> $sha"
           done
