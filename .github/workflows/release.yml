@@ -1,0 +1,33 @@
+# Creates a GitHub Release for every v* tag that has notes in .github/release-notes/<tag>.md
+# (first line = title, rest = body). Runs on tag push and by hand (Actions -> Release -> Run);
+# tags that already have a release are skipped, so it is safe to re-run.
+name: Release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+      - name: Create missing releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest=$(git tag -l 'v*' --sort=-v:refname | head -1)
+          for tag in $(git tag -l 'v*' --sort=v:refname); do
+            notes=".github/release-notes/$tag.md"
+            [ -f "$notes" ] || { echo "skip $tag (no notes)"; continue; }
+            if gh release view "$tag" >/dev/null 2>&1; then echo "exists $tag"; continue; fi
+            title="$tag · $(head -1 "$notes")"
+            tail -n +3 "$notes" > /tmp/body.md
+            if [ "$tag" = "$latest" ]; then flag=--latest; else flag=--latest=false; fi
+            gh release create "$tag" --verify-tag --title "$title" --notes-file /tmp/body.md $flag
+            echo "created $tag"
+          done
