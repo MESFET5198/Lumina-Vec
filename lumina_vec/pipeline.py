@@ -100,7 +100,8 @@ def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_s
               filter_speckle=12, layer_difference=10, simplify=1.5, color_precision=6, ai=True,
               clean=None,
               bands=0, vote_sigma=3.0, l_weight=1.3, c_weight=2.0, blur_sigma=12.0, edge_thr=0.4, detail_overlay=True, ink=False, progress=None,
-              print_mm=0.0, line_mm=0.42, lines="anime", weights_dir=None, hierarchical_mode=None, contour_lines=True):
+              print_mm=0.0, line_mm=0.42, lines="anime", weights_dir=None, hierarchical_mode=None, contour_lines=True,
+              tracer="contour", label_sigma=1.0):
     W, H = img.size
     # stage cost model (seconds per megapixel, CPU), calibrated on two test images; the AI step
     # scales with its (downscaled) input, everything else with the working resolution
@@ -186,8 +187,17 @@ def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_s
                 from .contour import ink_field
                 geo = clean if grain_level(img) >= GRAIN_THRESHOLD else \
                     np.asarray(img.convert("RGB").resize((w, h), Image.LANCZOS))
-                fld = ink_field(geo, im)
+                # WHERE: the line model's own map, gated low (0.15): its thin faint outlines peak
+                # at ~0.5 and a mask built from local darkness missed them (outlines merge with
+                # dark shading into blobs). HOW WIDE / HOW DARK: the original's ink coverage
+                # (no highlight mask here: coverage comes from darkness, so highlights get none,
+                # while the dilated top-hat mask also ate every line beside white hair)
+                # Print mode keeps the conservative stroke mask: model-gated hairlines add
+                # thousands of sub-extrusion islands
+                gate = im if min_px else lm > 0.15
+                fld = ink_field(geo, gate)
                 fld[bright] = 0
+                im = gate & (fld > 0.35)
                 if min_px:      # print mode: never thinner than one extrusion line
                     rd_cov = cv2.resize(rd.astype(np.float32), (w, h), interpolation=cv2.INTER_AREA)
                     fld = np.maximum(fld, rd_cov)
@@ -210,11 +220,27 @@ def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_s
                                  progress=lambda f, s: report("bands", f, s), min_px=min_px,
                                  cover=ink_cover)
         color_precision, layer_difference = 8, 1   # keep every band as its own layer
-    report("trace", 0.0, "这一步无法细分，请稍候")
-    cfg = vtracer.Config(filter_speckle=filter_speckle, layer_difference=layer_difference,
-                         color_precision=color_precision, simplify=simplify, palette=palette,
-                         hierarchical=hierarchical)
-    svg = cfg.convert_pixels(np.dstack([rgb, np.full((h, w), 255, np.uint8)]).tobytes(), w, h)
+    # print mode: the cutout mosaic is still more printable (its stacked shapes leave sub-0.7 px
+    # slivers where two fitted curves trace the same edge); contour tracer for display output
+    if bands and tracer == "contour" and not min_px:
+        # own tracer: mode-filtered label map -> stacked sub-pixel contours -> cubic Beziers.
+        # Each visible boundary belongs to exactly one shape, so no seams/slivers (no cutout needed)
+        from .contour import smooth_labels, drop_slivers, region_paths
+        report("trace", 0.0, "平滑色块边界")
+        if label_sigma > 0:
+            rgb = smooth_labels(rgb, sigma=label_sigma)
+        rgb = drop_slivers(rgb, keep_dark=0.08 if not ink else 0.0)
+        items = region_paths(rgb, min_area=max(6, int(min_px * min_px)) if min_px else 6,
+                             progress=lambda f: report("trace", 0.1 + 0.9 * f, f"{f * 100:.0f}%"))
+        svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}">\n'
+               + "\n".join(p for _, p in items) + "\n</svg>")
+        hierarchical = "stacked"
+    else:
+        report("trace", 0.0, "这一步无法细分，请稍候")
+        cfg = vtracer.Config(filter_speckle=filter_speckle, layer_difference=layer_difference,
+                             color_precision=color_precision, simplify=simplify, palette=palette,
+                             hierarchical=hierarchical)
+        svg = cfg.convert_pixels(np.dstack([rgb, np.full((h, w), 255, np.uint8)]).tobytes(), w, h)
     report("detail")
     if hierarchical == "cutout":
         svg = add_gap_fillers(svg)       # colour layer only; lines/details go on top afterwards
@@ -247,6 +273,8 @@ def main():
     ap.add_argument("--line-mm", type=float, default=0.42, help="extrusion line width in mm (default 0.42)")
     ap.add_argument("--lines", choices=["anime", "none"], default=None,
                     help="AI line model for the line layer (default anime if weights/netG.pth exists)")
+    ap.add_argument("--tracer", choices=["contour", "vtracer"], default="contour",
+                    help="colour-layer tracer for band presets (default: own sub-pixel contour tracer)")
     ap.add_argument("--ink", type=int, choices=[0, 1], default=None,
                     help="separate smoothed outline layer (default: on for the grainy `shading` preset)")
     a = ap.parse_args()
@@ -271,7 +299,7 @@ def main():
         if v is not None:
             params[k] = v
     t = time.time()
-    svg, work = vectorize(src, a.weights, ai=not a.no_ai,
+    svg, work = vectorize(src, a.weights, ai=not a.no_ai, tracer=a.tracer,
                           clean=Image.open(a.clean) if a.clean else None, **params)
     open(a.output, "w").write(svg)
     if a.save_clean:

@@ -202,3 +202,128 @@ def field_paths(field, mask, color, ss=2, tol=0.6, min_area=4.0):
         return ""
     col = "#%02x%02x%02x" % tuple(int(v) for v in color)
     return f'<path d="{"".join(parts)}" fill="{col}" fill-rule="evenodd"/>'
+
+
+# ---------------------------------------------------------------- colour regions
+
+def region_paths(post, tol=0.7, sigma=0.5, ss=2, min_area=6, level=0.4, progress=None):
+    """Trace a posterised image (one flat colour per region) without vtracer.
+    Stacked painting: regions are painted largest first, and each region's shape is the region
+    itself plus every region painted after it (those cover it anyway). So a shape only has its
+    own visible edge against regions painted earlier, there is nothing to leave a gap, and thin
+    regions are supported by what lies on top of them. The soft mask's iso-contour is fitted
+    with cubic Beziers at sub-pixel precision.
+    Returns list of (filled_area, svg_path_string) in paint order."""
+    from scipy import ndimage as ndi
+    H, W = post.shape[:2]
+    key = (post[..., 0].astype(np.int64) << 16) | (post[..., 1].astype(np.int64) << 8) | post[..., 2]
+    reg = measure.label(key + 1, connectivity=1, background=0)
+    objs = ndi.find_objects(reg)
+    area = np.bincount(reg.ravel())
+    order = sorted(range(1, len(area)), key=lambda r: -area[r])
+    rank = np.zeros(len(area), np.int64)
+    rank[order] = np.arange(len(order))
+    rmap = rank[reg]
+    items = []
+    n = len(order)
+    pad = 3
+    for i, r in enumerate(order):
+        sl = objs[r - 1]
+        if sl is None:
+            continue
+        if progress and i % 500 == 0:
+            progress(i / n)
+        y0, y1 = max(0, sl[0].start - pad), min(H, sl[0].stop + pad)
+        x0, x1 = max(0, sl[1].start - pad), min(W, sl[1].stop + pad)
+        own = reg[y0:y1, x0:x1] == r
+        m = own | (rmap[y0:y1, x0:x1] > i)
+        lab, _ = ndi.label(m)
+        ids = np.unique(lab[own])
+        m = np.isin(lab, ids[ids > 0])
+        # no hole filling: m already holds every later region, so its holes are regions painted
+        # EARLIER, which must stay visible (filling them painted e.g. hair over with background)
+        if i == 0:
+            m[:] = True
+        if area[r] < min_area and i > 0:
+            continue
+        f = np.pad(m.astype(np.float32), 2, mode="edge" if i == 0 else "constant")
+        f = cv2.resize(f, None, fx=ss, fy=ss, interpolation=cv2.INTER_LINEAR)
+        f = cv2.GaussianBlur(f, (0, 0), sigma * ss)
+        if i == 0:
+            d = "M0,0H%dV%dH0Z" % (W, H)
+        else:
+            cs = measure.find_contours(f, level)
+            if not cs:
+                continue
+            parts = []
+            for c in cs:
+                if len(c) < 8:
+                    continue
+                xy = (c[:, ::-1] + 0.5) / ss + np.array([x0 - 2, y0 - 2])
+                segs = fit_closed(xy, tol=tol)
+                if not segs:
+                    continue
+                p = ["M%.2f,%.2f" % tuple(segs[0][0])]
+                for sg in segs:
+                    p.append("C%.2f,%.2f %.2f,%.2f %.2f,%.2f" % (*sg[1], *sg[2], *sg[3]))
+                parts.append("".join(p) + "Z")
+            if not parts:
+                continue
+            d = "".join(parts)
+        yy, xx = np.argwhere(own)[0]
+        col = post[y0 + yy, x0 + xx]
+        items.append((int(area[r]), f'<path d="{d}" fill="#{int(col[0]):02x}{int(col[1]):02x}{int(col[2]):02x}" fill-rule="evenodd"/>'))
+    return items
+
+
+def smooth_labels(post, sigma=1.0, iters=1):
+    """Mode filter for a posterised image: blur each colour's indicator and take the argmax.
+    Removes single-pixel specks and the staircase of per-pixel labels along boundaries, so the
+    region tracer gets smooth shapes. Structures thinner than ~sigma can be absorbed."""
+    H, W = post.shape[:2]
+    key = (post[..., 0].astype(np.int64) << 16) | (post[..., 1].astype(np.int64) << 8) | post[..., 2]
+    cols, lab = np.unique(key.ravel(), return_inverse=True)
+    lab = lab.reshape(H, W)
+    for _ in range(iters):
+        best = np.full((H, W), -1.0, np.float32)
+        arg = lab.copy()
+        for c in np.unique(lab):
+            m = (lab == c).astype(np.float32)
+            s = cv2.GaussianBlur(m, (0, 0), sigma)
+            upd = s > best
+            best[upd] = s[upd]
+            arg[upd] = c
+        lab = arg
+    k = cols[lab]
+    return np.stack([(k >> 16) & 255, (k >> 8) & 255, k & 255], -1).astype(np.uint8)
+
+
+def drop_slivers(post, max_half_width=1.2, keep_dark=0.08):
+    """Remove thin regions of a posterised image (anti-aliasing bands between two fills, which
+    trace as ragged dark/light streaks along every boundary): pixels of a region whose
+    inscribed half-width is <= max_half_width take the colour of the nearest pixel of a thicker
+    region. Thin regions clearly darker than what would replace them are line art and stay."""
+    from scipy import ndimage as ndi
+    from .color import srgb_to_oklab
+    H, W = post.shape[:2]
+    key = (post[..., 0].astype(np.int64) << 16) | (post[..., 1].astype(np.int64) << 8) | post[..., 2]
+    reg = measure.label(key + 1, connectivity=1, background=0)
+    # inscribed half-width per region: max of the distance to the region's own border
+    edge = np.zeros((H, W), bool)
+    edge[:, 1:] |= reg[:, 1:] != reg[:, :-1]; edge[:, :-1] |= reg[:, 1:] != reg[:, :-1]
+    edge[1:] |= reg[1:] != reg[:-1]; edge[:-1] |= reg[1:] != reg[:-1]
+    dt = ndi.distance_transform_edt(~edge) + 0.5
+    hw = ndi.maximum(dt, reg, index=np.arange(reg.max() + 1))
+    thin = hw[reg] <= max_half_width
+    if not thin.any():
+        return post
+    _, (iy, ix) = ndi.distance_transform_edt(thin, return_indices=True)
+    repl = post[iy, ix]
+    if keep_dark:
+        L = srgb_to_oklab(post)[..., 0]; Lr = L[iy, ix]
+        n = reg.max() + 1
+        dl = ndi.mean(Lr - L, reg, index=np.arange(n))
+        thin &= np.asarray(dl)[reg] < keep_dark
+    out = post.copy()
+    out[thin] = repl[thin]
+    return out
