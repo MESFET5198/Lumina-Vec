@@ -101,7 +101,7 @@ def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_s
               clean=None,
               bands=0, vote_sigma=3.0, l_weight=1.3, c_weight=2.0, blur_sigma=12.0, edge_thr=0.4, detail_overlay=True, ink=False, progress=None,
               print_mm=0.0, line_mm=0.42, lines="anime", weights_dir=None, hierarchical_mode=None, contour_lines=True,
-              tracer="contour", label_sigma=1.0):
+              tracer="contour", label_sigma=1.0, thin_thr=0.0):
     W, H = img.size
     # stage cost model (seconds per megapixel, CPU), calibrated on two test images; the AI step
     # scales with its (downscaled) input, everything else with the working resolution
@@ -218,7 +218,7 @@ def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_s
         rgb, palette = posterize(rgb, k=bands, vote_sigma=vote_sigma, l_weight=l_weight, c_weight=c_weight,
                                  edge_thr=edge_thr, blur_sigma=blur_sigma, smooth_src=clean,
                                  progress=lambda f, s: report("bands", f, s), min_px=min_px,
-                                 cover=ink_cover)
+                                 cover=ink_cover, thin_thr=thin_thr)
         color_precision, layer_difference = 8, 1   # keep every band as its own layer
     # print mode: the cutout mosaic is still more printable (its stacked shapes leave sub-0.7 px
     # slivers where two fitted curves trace the same edge); contour tracer for display output

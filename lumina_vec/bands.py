@@ -233,13 +233,24 @@ def visible_cleanup(labels, cover, min_px):
 
 
 def posterize(rgb, k=112, vote_sigma=1.0, l_weight=1.3, c_weight=2.0, edge_thr=0.4,
-              blur_sigma=0.0, smooth_src=None, speck_area=48, speck_keep_de=0.10, k_detail=48, progress=None, min_px=0, cover=None, **_):
+              blur_sigma=0.0, smooth_src=None, speck_area=48, speck_keep_de=0.10, k_detail=48, progress=None, min_px=0, cover=None,
+              thin_thr=0.0, **_):
     """Return (posterised rgb, palette hex list).
     blur_sigma>0: low-contrast pixels are labelled from a Gaussian-blurred copy (smooth
     contours); vote only among low-contrast pixels so bands don't eat lines."""
     step = progress or (lambda *_: None)
     step(0.0, "调色板")
     edges = edge_strength(rgb) > edge_thr if edge_thr else np.zeros(rgb.shape[:2], bool)
+    if thin_thr > 0:
+        # faint THIN structures (background line patterns, knit, hair strands): darker or lighter
+        # than their surroundings at a small scale. Gradient smoothing must not run over them,
+        # it erased e.g. a whole floral wallpaper (edge_strength misses low-contrast lines)
+        from .color import srgb_to_oklab
+        L = srgb_to_oklab(rgb if smooth_src is None else smooth_src)[..., 0].astype(np.float32)
+        kk = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+        ridge = np.maximum(cv2.morphologyEx(L, cv2.MORPH_BLACKHAT, kk),
+                           cv2.morphologyEx(L, cv2.MORPH_TOPHAT, kk)) > thin_thr
+        edges = edges | cv2.dilate(ridge.astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)
     cen = fit_palette(rgb, k, l_weight=l_weight, c_weight=c_weight)
     if k_detail and edges.any():
         # dedicated colours for high-contrast pixels: a tiny mouth or nose line otherwise has no
