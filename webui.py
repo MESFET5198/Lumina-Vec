@@ -1,4 +1,4 @@
-import io, os, re, threading, time, uuid
+import io, json, os, re, threading, time, uuid
 from collections import OrderedDict
 from pathlib import Path
 from PIL import Image
@@ -12,16 +12,70 @@ INDEX = Path(__file__).with_name('index.html')
 UP.mkdir(parents=True, exist_ok=True); OUT.mkdir(parents=True, exist_ok=True)
 app = Flask(__name__); app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024
 
-jobs = OrderedDict()            # job id -> state dict (newest last)
+jobs = OrderedDict()            # job id -> state dict (newest last); persisted to JOBS_FILE
 lock = threading.Lock()
 runner = threading.Semaphore(1)  # CPU-heavy: run one conversion at a time, queue the rest
 MAX_PIXELS = 40_000_000
-MAX_JOBS_KEPT = 50
+JOBS_FILE = ROOT / 'jobs.json'
+VOLATILE = ('progress', 'stage')   # live-only fields, not worth a disk write per update
+
+
+def _save():
+    """Write the job list to /data (call with `lock` held). Atomic: tmp file + rename."""
+    tmp = JOBS_FILE.with_suffix('.tmp')
+    data = {j: {k: v for k, v in s.items() if k not in VOLATILE} for j, s in jobs.items()}
+    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding='utf8')
+    os.replace(tmp, JOBS_FILE)
 
 
 def _set(job, **kw):
     with lock:
         jobs[job].update(kw)
+        if set(kw) - set(VOLATILE):
+            _save()
+
+
+def _load():
+    """Job history survives restarts: read /data/jobs.json, mark jobs a restart cut off as
+    interrupted, and rebuild records for result files that have none (older versions kept the
+    list in memory only)."""
+    data = {}
+    if JOBS_FILE.is_file():
+        try:
+            data = json.loads(JOBS_FILE.read_text(encoding='utf8'))
+        except (OSError, ValueError):
+            JOBS_FILE.rename(JOBS_FILE.with_suffix('.broken'))
+    for j, s in data.items():
+        if s.get('status') in ('queued', 'running'):
+            s.update(status='interrupted', error='服务重启，任务中断')
+    for svg in OUT.glob('*.svg'):
+        j = svg.stem
+        if j in data:
+            continue
+        rec = dict(status='done', name=f'{j[:8]}（恢复）', recovered=True, created=svg.stat().st_mtime,
+                   finished=svg.stat().st_mtime, svg=f'/file/{j}.svg', bytes=svg.stat().st_size)
+        png = OUT / f'{j}.png'
+        if png.is_file():
+            rec['png'] = f'/file/{j}.png'
+            try:
+                with Image.open(png) as im:
+                    rec['width'], rec['height'] = im.size
+            except OSError:
+                pass
+        try:
+            txt = svg.read_text(encoding='utf8', errors='ignore')
+            rec['paths'] = txt.count('<path')
+        except OSError:
+            pass
+        data[j] = rec
+    for src in UP.glob('*.source'):
+        if src.stem not in data:
+            data[src.stem] = dict(status='interrupted', name=f'{src.stem[:8]}（恢复）', recovered=True,
+                                  created=src.stat().st_mtime, error='没有结果文件')
+    for j, s in sorted(data.items(), key=lambda kv: kv[1].get('created', 0)):
+        jobs[j] = s
+    with lock:
+        _save()
 
 
 def _queue_position(job):
@@ -110,11 +164,50 @@ def process():
     raw = up.read(); job = uuid.uuid4().hex
     (UP / f'{job}.source').write_bytes(raw)
     with lock:
-        jobs[job] = {'status': 'queued', 'name': Path(up.filename).name[:120], 'created': time.time()}
-        while len(jobs) > MAX_JOBS_KEPT:
-            jobs.popitem(last=False)
+        jobs[job] = {'status': 'queued', 'name': Path(up.filename).name[:120], 'created': time.time(),
+                     'request': dict(preset=preset, overrides=overrides, fine=fine)}
+        _save()
     threading.Thread(target=work, args=(job, raw, preset, overrides, fine), daemon=True).start()
     return jsonify(job=job, status='queued')
+
+
+@app.post('/api/jobs/<job>/retry')
+def retry(job):
+    """Run an interrupted or failed job again with the settings it was submitted with."""
+    src = UP / f'{job}.source'
+    with lock:
+        s = jobs.get(job)
+        if not s:
+            return jsonify(error='任务不存在'), 404
+        if s['status'] in ('queued', 'running'):
+            return jsonify(error='任务还在进行'), 409
+        req = s.get('request')
+        if not req or not src.is_file():
+            return jsonify(error='缺少原图或转换设置，无法重试'), 409
+        for k in ('error', 'svg', 'png', 'started', 'finished', 'seconds', 'paths', 'params'):
+            s.pop(k, None)
+        s.update(status='queued', created=time.time())
+        jobs.move_to_end(job)
+        _save()
+    threading.Thread(target=work, args=(job, src.read_bytes(), req['preset'], req['overrides'], req['fine']),
+                     daemon=True).start()
+    return jsonify(job=job, status='queued')
+
+
+@app.delete('/api/jobs/<job>')
+def delete_job(job):
+    """Delete a job's record and its files (original upload, SVG, PNG preview)."""
+    with lock:
+        s = jobs.get(job)
+        if not s:
+            return jsonify(error='任务不存在'), 404
+        if s['status'] in ('queued', 'running'):
+            return jsonify(error='任务还在进行，不能删除'), 409
+        jobs.pop(job)
+        _save()
+    for f in (UP / f'{job}.source', OUT / f'{job}.svg', OUT / f'{job}.png'):
+        f.unlink(missing_ok=True)
+    return jsonify(ok=True)
 
 
 @app.get('/api/status/<job>')
@@ -132,10 +225,13 @@ def status(job):
 
 @app.get('/api/jobs')
 def list_jobs():
+    limit = min(max(request.args.get('limit', 200, type=int), 1), 1000)
     with lock:
-        items = [dict(id=j, **{k: s.get(k) for k in ('status', 'name', 'png', 'svg', 'preset', 'seconds', 'paths')})
+        items = [dict(id=j, retry=bool(s.get('request')),
+                      **{k: s.get(k) for k in ('status', 'name', 'png', 'svg', 'preset', 'seconds', 'paths',
+                                               'error', 'created')})
                  for j, s in reversed(jobs.items())]
-    return jsonify(items[:20])
+    return jsonify(items[:limit])
 
 
 @app.get('/file/<name>')
@@ -147,6 +243,9 @@ def file(name):
     if not path.is_file():
         abort(404)
     return send_file(path, as_attachment=request.args.get('download') == '1', download_name=name)
+
+
+_load()
 
 
 @app.get('/healthz')

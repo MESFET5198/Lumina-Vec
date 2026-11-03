@@ -30,7 +30,9 @@ header .health{margin-left:auto;font-size:12px;color:var(--muted);display:flex;a
 .app{display:grid;grid-template-columns:340px 1fr;gap:20px;padding:20px 24px;max-width:1600px;margin:0 auto}
 @media (max-width:900px){.app{grid-template-columns:1fr;padding:16px}}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
-.side{display:flex;flex-direction:column;gap:16px;align-self:start;position:sticky;top:16px}
+.side{display:flex;flex-direction:column;gap:16px;align-self:start;position:sticky;top:16px;
+  max-height:calc(100vh - 32px);overflow-y:auto;scrollbar-gutter:stable;padding-right:2px}
+@media (max-width:900px){.side{max-height:none;overflow:visible}}
 @media (max-width:900px){.side{position:static}}
 .section{padding:16px}
 .section h2{font-size:13px;font-weight:600;color:var(--muted);margin:0 0 10px;text-transform:uppercase;letter-spacing:.6px}
@@ -68,6 +70,9 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .seg button.on{background:var(--accent);color:var(--accent-ink)}
 .hint{font-size:12px;color:var(--muted);margin-top:6px}
 
+.gobar{position:sticky;bottom:0;z-index:2;margin-top:-4px;padding:12px 0 2px;
+  background:linear-gradient(to bottom,transparent,var(--bg) 14px);text-align:center}
+@media (max-width:900px){.gobar{position:sticky;bottom:0;padding-bottom:12px}}
 .go{width:100%;padding:12px;border:0;border-radius:10px;background:var(--accent);color:var(--accent-ink);font-weight:600;font-size:15px;cursor:pointer;transition:.12s}
 .go:hover{filter:brightness(1.05)}.go:disabled{opacity:.45;cursor:not-allowed}
 
@@ -117,6 +122,17 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .hitem img{width:92px;height:92px;object-fit:cover;border-radius:8px;border:1px solid var(--line);display:block;margin-bottom:4px;background:var(--soft)}
 .hitem.cur img{outline:2px solid var(--accent);outline-offset:1px}
 .hitem span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hitem{position:relative}
+.hitem .ph{width:92px;height:92px;border-radius:8px;border:1px dashed var(--line);display:grid;place-items:center;margin-bottom:4px;background:var(--soft);font-size:12px}
+.hitem .badge{position:absolute;left:4px;top:4px;font-size:10.5px;padding:1px 5px;border-radius:5px;background:var(--err);color:#fff}
+.hitem .badge.q{background:var(--muted)}
+.hitem .acts{position:absolute;right:4px;top:4px;display:none;gap:4px}
+.hitem:hover .acts,.hitem:focus-within .acts{display:flex}
+@media (hover:none){.hitem .acts{display:flex}}
+.hitem .acts button{border:0;border-radius:6px;padding:2px 6px;font-size:11px;cursor:pointer;background:rgba(20,20,20,.72);color:#fff}
+.hitem .acts button.warn{background:var(--err)}
+.history h2{display:flex;justify-content:space-between;align-items:center}
+.history h2 small{font-weight:400}
 </style>
 </head>
 <body>
@@ -194,7 +210,8 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       </details>
     </div>
 
-    <button class="go" id="go" disabled>开始转换</button>
+    <div class="gobar"><button class="go" id="go" disabled>开始转换</button>
+      <div class="hint">按当前的打印、预设和高级选项转换 · Ctrl+Enter</div></div>
   </aside>
 
   <section class="main">
@@ -224,7 +241,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       <div class="dl"><a class="btn primary" id="dlSvg" download>下载 SVG</a><a class="btn" id="dlPng" download>PNG 预览</a></div>
     </div>
 
-    <div class="panel history" id="history" hidden><h2>最近转换</h2><div class="hlist" id="hlist"></div></div>
+    <div class="panel history" id="history" hidden><h2>最近转换 <small id="hcount"></small></h2><div class="hlist" id="hlist"></div></div>
   </section>
 </div>
 
@@ -300,11 +317,18 @@ $('#go').onclick = () => {
   x.onload = () => {
     let r = {}; try { r = JSON.parse(x.responseText); } catch {}
     if (x.status >= 400) { progress(false); $('#go').disabled = false; return showErr(r.error || '上传失败'); }
-    job = r.job; track(job, true);
+    job = r.job; track(job, true); loadHistory();
   };
   x.onerror = () => { progress(false); $('#go').disabled = false; showErr('连接失败'); };
   x.send(fd);
 };
+
+// sidebar fits the window (its own scrollbar) so the start button at its bottom is always visible
+const side = $('.side');
+function fitSide() { if (matchMedia('(max-width:900px)').matches) { side.style.maxHeight = ''; return; }
+  side.style.maxHeight = (innerHeight - Math.max(side.getBoundingClientRect().top, 16) - 16) + 'px'; }
+addEventListener('scroll', fitSide, {passive: true}); addEventListener('resize', fitSide); fitSide();
+document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && !$('#go').disabled) $('#go').click(); });
 
 function track(id, fresh) {
   clearInterval(poll);
@@ -322,7 +346,7 @@ function track(id, fresh) {
       if (fresh) learn(r);
       showResult(id, r); loadHistory();
     } else if (r.status === 'error' || r.error) {
-      clearInterval(poll); progress(false); $('#go').disabled = !file; showErr('转换失败：' + (r.error || '未知错误'));
+      clearInterval(poll); progress(false); $('#go').disabled = !file; showErr('转换失败：' + (r.error || '未知错误')); loadHistory();
     }
   };
   tick(); poll = setInterval(tick, 1000);
@@ -355,16 +379,44 @@ function showResult(id, r) {
   document.querySelectorAll('.hitem').forEach(h => h.classList.toggle('cur', h.dataset.id === id));
 }
 
+const ST = {queued: ['排队', 'q'], running: ['转换中', 'q'], error: ['失败', ''], interrupted: ['中断', '']};
 async function loadHistory() {
   let items = []; try { items = await fetch('/api/jobs').then(r => r.json()); } catch {}
-  items = items.filter(i => i.status === 'done');
   $('#history').hidden = !items.length;
-  $('#hlist').innerHTML = items.map(i => `<div class="hitem${i.id===job?' cur':''}" data-id="${i.id}" title="${esc(i.name||'')}">
-    <img loading="lazy" src="${i.png}" alt=""><span>${esc(i.name || '')}</span><span>${i.preset} · ${i.seconds}s</span></div>`).join('');
+  $('#hcount').textContent = items.length ? `共 ${items.length} 条 · 保存在服务器 /data` : '';
+  $('#hlist').innerHTML = items.map(i => {
+    const st = ST[i.status], busy = i.status === 'queued' || i.status === 'running';
+    const thumb = i.png ? `<img loading="lazy" src="${i.png}" alt="">` : `<div class="ph">${st ? st[0] : ''}</div>`;
+    const acts = busy ? '' : `<div class="acts">${(i.status !== 'done' && i.retry) ? '<button data-act="retry" title="用原来的设置重新转换">重试</button>' : ''}<button data-act="del" title="删除记录和文件">删除</button></div>`;
+    const sub = i.status === 'done' ? `${i.preset || ''}${i.seconds ? ' · ' + i.seconds + 's' : ''}` : esc(i.error || (st ? st[0] : ''));
+    return `<div class="hitem${i.id===job?' cur':''}" data-id="${i.id}" data-status="${i.status}" title="${esc(i.name||'')}${i.error ? '\n' + esc(i.error) : ''}">
+      ${st ? `<i class="badge ${st[1]}">${st[0]}</i>` : ''}${acts}${thumb}<span>${esc(i.name || '')}</span><span>${sub}</span></div>`;
+  }).join('');
 }
-$('#hlist').onclick = async e => { const h = e.target.closest('.hitem'); if (!h) return;
-  const r = await fetch('/api/status/' + h.dataset.id).then(r => r.json());
-  if (r.status === 'done') { job = h.dataset.id; srcURL = null; showResult(job, r); } };
+$('#hlist').onclick = async e => {
+  const h = e.target.closest('.hitem'); if (!h) return;
+  const id = h.dataset.id, act = e.target.closest('button')?.dataset.act;
+  if (act === 'del') {
+    const b = e.target.closest('button');
+    if (!b.classList.contains('warn')) {           // first click arms, second click deletes
+      b.classList.add('warn'); b.textContent = '确认删除';
+      setTimeout(() => { b.classList.remove('warn'); b.textContent = '删除'; }, 3000); return;
+    }
+    const r = await fetch('/api/jobs/' + id, {method: 'DELETE'});
+    if (!r.ok) return showErr((await r.json().catch(() => ({}))).error || '删除失败');
+    if (id === job) { job = null; $('#result').classList.remove('show'); }
+    return loadHistory();
+  }
+  if (act === 'retry') {
+    const r = await fetch(`/api/jobs/${id}/retry`, {method: 'POST'}); const j = await r.json().catch(() => ({}));
+    if (!r.ok) return showErr(j.error || '重试失败');
+    job = id; srcURL = null; showErr(''); $('#go').disabled = true; track(id, true); return loadHistory();
+  }
+  const r = await fetch('/api/status/' + id).then(r => r.json());
+  if (r.status === 'done') { job = id; srcURL = null; showErr(''); showResult(job, r); }
+  else if (r.status === 'queued' || r.status === 'running') { job = id; track(id, false); }
+  else showErr(`${h.title.split('\n')[0]}：${r.error || '没有结果'}`);
+};
 
 // ---------- viewer: compare slider + zoom / pan
 const viewer = $('#viewer'), stage = $('#stage'), A = $('#imgA'), B = $('#imgB'), split = $('#split');
