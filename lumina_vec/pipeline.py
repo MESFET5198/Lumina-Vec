@@ -96,12 +96,30 @@ def auto_params(img: Image.Image):
     return name, grain, params
 
 
+FINE_MAX_PX = 6e6              # fine mode: working-size cap (memory / time)
+
+
+def fine_params(img: Image.Image, params: dict) -> dict:
+    """精细模式 (tested on 5 illustrations, Nov 2026): line layer v3 on; for images that are not
+    grainy, no 2x downscale before the AI clean (small images lost hair strands and wallpaper
+    lines there), a 2x working size (measured knee: 1x->2x completes lines, beyond 2x nothing
+    but more nodes), and thin faint structures protected from gradient smoothing. Grainy
+    images keep their preset's downscale and smoothing (grain would pass as 'thin structure')."""
+    p = dict(params)
+    p.update(ink=True, line_style="v3")
+    if grain_level(img) < GRAIN_THRESHOLD:
+        W, H = img.size
+        p.update(pre_down=1.0, thin_thr=0.015,
+                 work_scale=round(min(2.0, (FINE_MAX_PX / (W * H)) ** 0.5), 2))
+    return p
+
+
 def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_sp=8, ms_sr=14,
               filter_speckle=12, layer_difference=10, simplify=1.5, color_precision=6, ai=True,
               clean=None,
               bands=0, vote_sigma=3.0, l_weight=1.3, c_weight=2.0, blur_sigma=12.0, edge_thr=0.4, detail_overlay=True, ink=False, progress=None,
               print_mm=0.0, line_mm=0.42, lines="anime", weights_dir=None, hierarchical_mode=None, contour_lines=True,
-              tracer="contour", label_sigma=1.0, thin_thr=0.0):
+              tracer="contour", label_sigma=1.0, thin_thr=0.0, line_style="v3"):
     W, H = img.size
     # stage cost model (seconds per megapixel, CPU), calibrated on two test images; the AI step
     # scales with its (downscaled) input, everything else with the working resolution
@@ -156,7 +174,24 @@ def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_s
         from .ink import ink_mask, fill_under, trace_ink, trace_lines
         report("ink")
         wdir = weights_dir or (os.path.dirname(weights) if weights else "weights")
-        if lines and os.path.exists(os.path.join(wdir, "netG.pth")):
+        v3 = (line_style == "v3" and lines and not min_px
+              and all(os.path.exists(os.path.join(wdir, f)) for f in ("netG.pth", "erika.pth")))
+        if v3:
+            # line layer v3 (lumina_vec/linework.py): manga_line + lineart_anime say WHERE, the
+            # original's ink says HOW WIDE (capped near the centreline: dark fills stay fills),
+            # one outline per line network traced at 2x, each piece coloured from the original.
+            # Print mode keeps the older path below (minimum stroke width / length handling).
+            from .linework import line_field, trace_field, color_paths
+            geo = clean if grain_level(img) >= GRAIN_THRESHOLD else \
+                np.asarray(img.convert("RGB").resize((w, h), Image.LANCZOS))
+            report("ink", 0.05, "AI 识别线条")
+            fld, _ = line_field(geo, clean, weights_dir=wdir)
+            report("ink", 0.7, "描摹线条")
+            ink_paths = color_paths(trace_field(fld), geo)
+            # colour fill is repaired ONLY under the drawn lines: texture the line layer did not
+            # take (knit, wallpaper lines) stays in the colour layer
+            im = fld > 0.5
+        elif lines and os.path.exists(os.path.join(wdir, "netG.pth")):
             # AI line model decides WHERE lines are; the original gives their width; strokes are
             # redrawn from centreline + smoothed width -> even, smooth lines
             from .lines import line_map, stroke_mask, redraw_strokes
@@ -275,6 +310,12 @@ def main():
                     help="AI line model for the line layer (default anime if weights/netG.pth exists)")
     ap.add_argument("--tracer", choices=["contour", "vtracer"], default="contour",
                     help="colour-layer tracer for band presets (default: own sub-pixel contour tracer)")
+    ap.add_argument("--fine", action="store_true",
+                    help="精细模式: line layer v3 + no AI downscale + 2x work size + thin-line protection")
+    ap.add_argument("--line-style", choices=["v3", "contour"], default=None,
+                    help="line layer: v3 (manga_line + lineart_anime, default) or contour (older)")
+    ap.add_argument("--thin-thr", type=float, default=None,
+                    help="protect faint thin structures from gradient smoothing (0 = off, fine mode 0.015)")
     ap.add_argument("--ink", type=int, choices=[0, 1], default=None,
                     help="separate smoothed outline layer (default: on for the grainy `shading` preset)")
     a = ap.parse_args()
@@ -284,6 +325,12 @@ def main():
         print(json.dumps(dict(auto_preset=chosen, grain=round(grain, 2), work_scale=params["work_scale"])))
     else:
         params = dict(PRESETS[a.preset])
+    if a.fine:
+        params = fine_params(src, params)
+    if a.line_style:
+        params["line_style"] = a.line_style
+    if a.thin_thr is not None:
+        params["thin_thr"] = a.thin_thr
     if a.ink is not None:
         params["ink"] = bool(a.ink)
     if a.lines:
@@ -293,7 +340,7 @@ def main():
         if a.bands is None and params.get("bands"):
             params["bands"] = 56            # fewer colours -> fewer filament recipes -> fewer splits per layer
     for k in params:
-        if k in ("ink", "print_mm", "line_mm", "lines"):
+        if k in ("ink", "print_mm", "line_mm", "lines", "line_style", "thin_thr"):
             continue
         v = getattr(a, k, None)
         if v is not None:

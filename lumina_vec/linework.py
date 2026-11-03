@@ -51,9 +51,8 @@ def line_field(geo, clean, weights_dir="weights", rmax=1.6, manga_norm=0.6, anim
 
 
 def _vecto():
-    exe = os.environ.get("VECTO_CLI") or shutil.which("vecto") or \
-        "/home/claude/ext/Vecto/Vecto.Cli/bin/Release/net8.0/vecto"
-    return exe if os.path.exists(exe) else None
+    exe = os.environ.get("VECTO_CLI") or shutil.which("vecto")
+    return exe if exe and os.path.exists(exe) else None
 
 
 def trace_field(F, ss=2, steep=3.0):
@@ -62,12 +61,11 @@ def trace_field(F, ss=2, steep=3.0):
     up = np.clip((up - 0.5) * steep + 0.5, 0, 1)
     exe = _vecto()
     if exe is None:
-        from .contour import field_paths
-        return [field_paths(F, F > 0.2, "#000000")]
+        return _trace_own(F, ss)
     with tempfile.TemporaryDirectory() as td:
         png = os.path.join(td, "l.png"); svg = os.path.join(td, "l.svg")
         cv2.imwrite(png, (255 * (1 - up)).astype(np.uint8))
-        env = dict(os.environ); env.setdefault("DOTNET_ROOT", "/home/claude/dotnet")
+        env = dict(os.environ)
         subprocess.run([exe, "trace", png, "-o", svg, "--colors", "2", "--detail", "high"],
                        check=True, capture_output=True, env=env)
         s = open(svg).read()
@@ -103,4 +101,22 @@ def color_paths(ds, rgb, dark_pct=35):
             continue
         l = lu[a:b]; c = px[a:b][l <= np.percentile(l, dark_pct)].mean(0)
         out.append(f'<path d="{d}" fill="#%02x%02x%02x"/>' % tuple(int(v) for v in c))
+    return out
+
+
+def _trace_own(F, ss=2, tol=0.4):
+    """Fallback without the Vecto CLI: one evenodd outline per connected line piece
+    (sub-pixel iso-contour of the field, cubic Beziers)."""
+    from .contour import field_paths
+    n, cc, st, _ = cv2.connectedComponentsWithStats((F > 0.5).astype(np.uint8), connectivity=8)
+    out = []
+    for i in range(1, n):
+        if st[i, cv2.CC_STAT_AREA] < 2:
+            continue
+        x, y, w, h = st[i, :4]
+        m = np.zeros(F.shape, bool)
+        m[y:y + h, x:x + w] = cc[y:y + h, x:x + w] == i
+        tag = field_paths(F, m, (0, 0, 0), ss=ss, tol=tol, min_area=1.0)
+        if tag:
+            out.append(re.search(r'\sd="([^"]*)"', tag).group(1))
     return out

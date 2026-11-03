@@ -1,6 +1,6 @@
 # Lumina-Vec
 
-把二次元插画转成 SVG，用于导入 [Lumina-Layers](https://github.com/lumina-layer-studio/Lumina-Layers) 做多色叠层 3D 打印。处理流程是：AI 去颗粒 → 明暗分层 → AI 线条层 → vtracer 描摹，另有专门针对打印的清理模式。
+把二次元插画转成 SVG，用于导入 [Lumina-Layers](https://github.com/lumina-layer-studio/Lumina-Layers) 做多色叠层 3D 打印。处理流程是：AI 去颗粒 → 明暗分层 → AI 线条层 → 色块描摹（亚像素等值线 + 贝塞尔），另有专门针对打印的清理模式。
 
 | 带颗粒的平涂（`shading`） | 厚涂（`shading-detail`） | 平涂赛璐璐（`cel`） |
 |---|---|---|
@@ -13,7 +13,7 @@
 **Docker（含 Web UI）**
 
 ```bash
-docker compose up -d --build      # 构建时会自动下载两个模型（约 220 MB）
+docker compose up -d --build      # 构建时会自动下载三个模型（约 390 MB）
 # 浏览器打开 http://<主机>:8091
 ```
 
@@ -29,6 +29,7 @@ pip install --pre "vtracer==1.0.0a3"
 
 python -m lumina_vec.pipeline in.png out.svg                           # 自动选预设
 python -m lumina_vec.pipeline in.png out.svg --print-mm 263            # 打印模式
+python -m lumina_vec.pipeline in.png out.svg --fine                     # 精细模式（实验）
 ```
 
 ## 预设
@@ -42,6 +43,18 @@ python -m lumina_vec.pipeline in.png out.svg --print-mm 263            # 打印�
 | `shading-detail` | 其余情况 | 厚涂、带渐变的插画 | 关 |
 
 另外还有 `illustration`、`detail`、`flat` 三个不分层的旧预设，只能手动指定。大图会自动缩小处理，`shading` 上限 1400 万像素，其余 600 万像素。判断阈值只用 6 张测试图标定过，效果不对时可以手动指定 `--preset`。
+
+## 精细模式（实验）
+
+Web UI 的"精细模式"开关，命令行 `--fine`：
+
+- 新线条层（v3）：manga_line 和 lineart_anime 两个线稿模型决定线在哪里，原图的墨色决定线有多粗，线条连贯、交叉处干净，颜色按每段线从原图取；
+- 颗粒不重的图不再先缩小一半再去颗粒，工作分辨率提到 2 倍（上限 600 万像素）；
+- 淡的细纹（背景花纹、针织纹、发丝）不会被渐变平滑抹掉。
+
+5 张测试图里，轮廓淡、细节多的图提升明显（色差：精灵 3.18 → 2.67、狐耳 3.43 → 2.90、花纹背景那张 3.04 → 2.10，测试时用 Vecto 描线，自带描线是 2.32），其余持平。代价是更慢、路径更多。打印模式下线条层仍用旧方法，保证最小线宽。
+
+线条描摹如果找到 [Vecto](https://github.com/DanielMevit/Vecto) 命令行（`VECTO_CLI` 环境变量或 PATH 里的 `vecto`）会调用它，效果略好；没有就用自带的描线，Docker 镜像里默认不带。
 
 ## 3D 打印模式
 
@@ -73,6 +86,10 @@ python -m lumina_vec.gcodecheck a.gcode b.gcode               # 切片后：对�
 | `--print-mm` / `--line-mm` | 打印尺寸（长边，mm）/ 挤出线宽，默认 0.42 |
 | `--ink 0/1` | 强制关闭或开启线条层 |
 | `--lines none` | 线条层不用 AI 模型，改按颜色规则找线 |
+| `--fine` | 精细模式（见上） |
+| `--line-style v3/contour` | 线条层新旧方法，默认 v3（打印模式固定旧方法） |
+| `--thin-thr X` | 细纹保护强度，0 关闭，精细模式 0.015 |
+| `--tracer contour/vtracer` | 色块描摹方法，默认自带（打印模式固定 vtracer） |
 | `--work-scale` | 处理时的分辨率倍数 |
 | `--clean img` | 使用其他机器上已做完 AI 去颗粒的图（见下） |
 
@@ -88,6 +105,8 @@ python -m lumina_vec.gcodecheck a.gcode b.gcode               # 切片后：对�
 ## 依赖与许可
 
 - [vtracer](https://github.com/visioncortex/vtracer)：MIT
+- [MangaLineExtraction_PyTorch](https://github.com/ljsabc/MangaLineExtraction_PyTorch)（manga_line，`lumina_vec/manga_net.py` 与权重 erika.pth）：MIT
+- [Vecto](https://github.com/DanielMevit/Vecto)：AGPL-3.0，可选的外部命令行工具，不包含在本项目中
 - [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) `realesr-animevideov3`：BSD-3-Clause
 - [ControlNet Annotators](https://huggingface.co/lllyasviel/Annotators) `lineart_anime`（`netG.pth`）：许可见上游仓库
 - 模型权重不随仓库分发，需要单独下载

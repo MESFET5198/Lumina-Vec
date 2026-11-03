@@ -14,5 +14,8 @@ ARG MODEL_URL=https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/
 RUN python -c "import urllib.request; urllib.request.urlretrieve('$MODEL_URL','/app/weights/realesr-animevideov3.pth')"
 ARG LINE_MODEL_URL=https://huggingface.co/lllyasviel/Annotators/resolve/main/netG.pth
 RUN python -c "import urllib.request; urllib.request.urlretrieve('$LINE_MODEL_URL','/app/weights/netG.pth')"
+# manga_line (MangaLineExtraction, MIT): line layer v3 / 精细模式
+ARG MANGA_MODEL_URL=https://huggingface.co/lllyasviel/Annotators/resolve/main/erika.pth
+RUN python -c "import urllib.request; urllib.request.urlretrieve('$MANGA_MODEL_URL','/app/weights/erika.pth')"
 EXPOSE 8080
 CMD ["gunicorn","-w","1","-b","0.0.0.0:8080","--timeout","600","webui:app"]

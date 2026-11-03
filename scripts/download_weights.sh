@@ -6,3 +6,5 @@ curl -L -o "$(dirname "$0")/../weights/realesr-animevideov3.pth" \
   https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-animevideov3.pth
 # AI line model (ControlNet lineart_anime annotator by lllyasviel) for the line layer
 curl -L -o "$(dirname "$0")/../weights/netG.pth" https://huggingface.co/lllyasviel/Annotators/resolve/main/netG.pth
+# manga_line (MangaLineExtraction, MIT) for line layer v3 / --fine
+curl -L -o "$(dirname "$0")/../weights/erika.pth" https://huggingface.co/lllyasviel/Annotators/resolve/main/erika.pth

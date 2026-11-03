@@ -3,7 +3,7 @@ from collections import OrderedDict
 from pathlib import Path
 from PIL import Image
 from flask import Flask, request, jsonify, send_file, abort
-from lumina_vec.pipeline import PRESETS, auto_params, grain_level, vectorize
+from lumina_vec.pipeline import PRESETS, auto_params, fine_params, grain_level, vectorize
 import cairosvg
 
 ROOT = Path(os.environ.get('LVEC_DATA', '/data')); UP = ROOT / 'uploads'; OUT = ROOT / 'outputs'
@@ -30,7 +30,7 @@ def _queue_position(job):
     return waiting.index(job) if job in waiting else 0
 
 
-def work(job, raw, preset, overrides):
+def work(job, raw, preset, overrides, fine=False):
     try:
         im = Image.open(io.BytesIO(raw)); im.load(); w, h = im.size
         if w * h > MAX_PIXELS:
@@ -41,11 +41,15 @@ def work(job, raw, preset, overrides):
                 name, grain, params = auto_params(im)
             else:
                 name, grain, params = preset, grain_level(im), dict(PRESETS[preset])
+            if fine:
+                params = fine_params(im, params)
             params.update(overrides)
+            params['fine'] = fine
             t = time.monotonic()
             def prog(frac, label):           # pipeline = 0-92 %, PNG preview render = last 8 %
                 _set(job, progress=round(frac * 0.92, 4), stage=label)
-            svg, _ = vectorize(im, str(WEIGHTS), ai=True, progress=prog, **params)
+            svg, _ = vectorize(im, str(WEIGHTS), ai=True, progress=prog,
+                               **{k: v for k, v in params.items() if k != 'fine'})
             _set(job, progress=0.93, stage='生成 PNG 预览')
             secs = time.monotonic() - t
             svgpath = OUT / f'{job}.svg'; pngpath = OUT / f'{job}.png'
@@ -93,13 +97,23 @@ def process():
     ink = request.form.get('ink', '').strip()
     if ink in ('0', '1'):
         overrides['ink'] = ink == '1'
+    fine = request.form.get('fine', '').strip() == '1'
+    ls = request.form.get('line_style', '').strip()
+    if ls in ('v3', 'contour'):
+        overrides['line_style'] = ls
+    thin = request.form.get('thin', '').strip()
+    if thin in ('0', '1'):
+        overrides['thin_thr'] = 0.015 if thin == '1' else 0.0
+    tracer = request.form.get('tracer', '').strip()
+    if tracer in ('contour', 'vtracer'):
+        overrides['tracer'] = tracer
     raw = up.read(); job = uuid.uuid4().hex
     (UP / f'{job}.source').write_bytes(raw)
     with lock:
         jobs[job] = {'status': 'queued', 'name': Path(up.filename).name[:120], 'created': time.time()}
         while len(jobs) > MAX_JOBS_KEPT:
             jobs.popitem(last=False)
-    threading.Thread(target=work, args=(job, raw, preset, overrides), daemon=True).start()
+    threading.Thread(target=work, args=(job, raw, preset, overrides, fine), daemon=True).start()
     return jsonify(job=job, status='queued')
 
 

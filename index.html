@@ -154,6 +154,11 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <div class="panel section">
       <h2>预设</h2>
       <div class="presets" id="presets"></div>
+      <div class="field">
+        <label>精细模式 <span class="tag">实验</span></label>
+        <div class="seg" id="fine"><button data-v="" class="on">关</button><button data-v="1">开</button></div>
+        <div class="hint">新线条层（manga_line + lineart_anime）；颗粒不重的图不再先缩小再去颗粒，工作分辨率 2 倍，淡的细纹（背景花纹、针织纹、发丝）不被平滑掉。更慢，路径更多。</div>
+      </div>
       <details>
         <summary>高级选项</summary>
         <div class="field">
@@ -169,7 +174,22 @@ input[type=range]{width:100%;accent-color:var(--accent)}
         <div class="field">
           <label>线条层</label>
           <div class="seg" id="ink"><button data-v="" class="on">自动</button><button data-v="1">开</button><button data-v="0">关</button></div>
-          <div class="hint">自动：颗粒重的图（Shading）和平涂图（Cel）开启；干净的厚涂/渐变插画（Shading Detail）关闭，原图线条已经够干净。</div>
+          <div class="hint">自动：颗粒重的图（Shading）和平涂图（Cel）开启；干净的厚涂/渐变插画（Shading Detail）关闭，原图线条已经够干净。精细模式下总是开启。</div>
+        </div>
+        <div class="field">
+          <label>线条风格</label>
+          <div class="seg" id="lineStyle"><button data-v="" class="on">新（v3）</button><button data-v="contour">旧</button></div>
+          <div class="hint">新：两个线稿模型定位置、原图墨色定粗细，线条连贯、交叉处干净。打印模式固定用旧方法（保证最小线宽）。</div>
+        </div>
+        <div class="field">
+          <label>细纹保护</label>
+          <div class="seg" id="thin"><button data-v="" class="on">自动</button><button data-v="1">开</button><button data-v="0">关</button></div>
+          <div class="hint">保护淡的细线不被渐变平滑抹掉。自动 = 精细模式下对颗粒不重的图开启。颗粒重的图开启会把噪点也留下。</div>
+        </div>
+        <div class="field">
+          <label>色块描摹</label>
+          <div class="seg" id="tracer"><button data-v="" class="on">自带</button><button data-v="vtracer">vtracer</button></div>
+          <div class="hint">自带：亚像素等值线 + 贝塞尔，边界更平滑。打印模式固定用 vtracer 无缝拼接。</div>
         </div>
       </details>
     </div>
@@ -219,7 +239,7 @@ const PRESETS = [
   ['detail','Detail','不分层，保留更多细节'],
   ['flat','Flat','更少更大的色块，会丢细笔画'],
 ];
-let file = null, preset = 'auto', ink = '', lines = '', job = null, poll = null, srcURL = null;
+let file = null, preset = 'auto', ink = '', lines = '', fine = '', lineStyle = '', thin = '', tracer = '', job = null, poll = null, srcURL = null;
 
 // ---------- presets & options
 $('#presets').innerHTML = PRESETS.map(([v,t,d,rec]) =>
@@ -232,6 +252,9 @@ $('#lines').onclick = e => { const b = e.target.closest('button'); if (!b) retur
   $('#lines').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); };
 $('#ink').onclick = e => { const b = e.target.closest('button'); if (!b) return; ink = b.dataset.v;
   $('#ink').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); };
+const seg = (id, set) => $(id).onclick = e => { const b = e.target.closest('button'); if (!b) return; set(b.dataset.v);
+  $(id).querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); };
+seg('#fine', v => fine = v); seg('#lineStyle', v => lineStyle = v); seg('#thin', v => thin = v); seg('#tracer', v => tracer = v);
 
 try { const [pm, lm] = JSON.parse(localStorage.getItem('lvec.print') || '[]'); if (pm) $('#printMm').value = pm; if (lm) $('#lineMm').value = lm; } catch {}
 
@@ -264,6 +287,10 @@ $('#go').onclick = () => {
   if (+$('#bands').value) fd.append('bands', $('#bands').value);
   if (ink) fd.append('ink', ink);
   if (lines) fd.append('lines', lines);
+  if (fine) fd.append('fine', fine);
+  if (lineStyle) fd.append('line_style', lineStyle);
+  if (thin) fd.append('thin', thin);
+  if (tracer) fd.append('tracer', tracer);
   if (+$('#printMm').value) { fd.append('print_mm', $('#printMm').value); fd.append('line_mm', $('#lineMm').value || '0.42'); }
   try { localStorage.setItem('lvec.print', JSON.stringify([$('#printMm').value, $('#lineMm').value])); } catch {}
   $('#go').disabled = true; showErr(''); $('#result').classList.remove('show');
@@ -319,7 +346,8 @@ function showResult(id, r) {
     ['颜色', r.colors], ['路径', (r.paths || 0).toLocaleString()],
     ['SVG', fmtBytes(r.bytes)], ['耗时', r.seconds + ' 秒'],
   ];
-  if (p.ink) stats.splice(4, 0, ['线条', p.lines === null ? '颜色规则' : 'AI']);
+  if (p.ink) stats.splice(4, 0, ['线条', p.lines === null ? '颜色规则' : (p.line_style === 'contour' || p.print_mm ? 'AI（旧）' : 'AI v3')]);
+  if (p.fine) stats.splice(1, 0, ['模式', '精细']);
   if (p.print_mm) stats.splice(1, 0, ['打印', `${p.print_mm} mm · 线宽 ${p.line_mm}`]);
   $('#stats').innerHTML = stats.map(([k, v]) => `<div class="stat"><small>${k}</small><b>${v ?? '–'}</b></div>`).join('');
   $('#dlSvg').href = r.svg + '?download=1'; $('#dlPng').href = r.png + '?download=1';
