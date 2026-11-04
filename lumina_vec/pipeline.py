@@ -175,7 +175,7 @@ def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_s
         from .ink import ink_mask, fill_under, trace_ink, trace_lines
         report("ink")
         wdir = weights_dir or (os.path.dirname(weights) if weights else "weights")
-        v3 = (line_style == "v3" and lines and not min_px
+        v3 = (line_style in ("v3", "stroke") and lines and not min_px
               and all(os.path.exists(os.path.join(wdir, f)) for f in ("netG.pth", "erika.pth")))
         if v3:
             # line layer v3 (lumina_vec/linework.py): manga_line + lineart_anime say WHERE, the
@@ -186,12 +186,22 @@ def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_s
             geo = clean if grain_level(img) >= GRAIN_THRESHOLD else \
                 np.asarray(img.convert("RGB").resize((w, h), Image.LANCZOS))
             report("ink", 0.05, "AI 识别线条")
-            fld, _ = line_field(geo, clean, weights_dir=wdir)
-            report("ink", 0.7, "描摹线条")
-            ink_paths = color_paths(trace_field(fld), geo)
-            # colour fill is repaired ONLY under the drawn lines: texture the line layer did not
-            # take (knit, wallpaper lines) stays in the colour layer
-            im = fld > 0.5
+            if line_style == "stroke":
+                # v4: strokes (lumina_vec/strokes2.py) - continuous, tapered, one colour each
+                from .lines import line_map
+                from .strokes2 import stroke_layer
+                dl = min(max(h, w), 1536)
+                M = line_map(clean, "manga", detect_long=dl, weights_dir=wdir)
+                A = line_map(clean, "anime", detect_long=dl, weights_dir=wdir)
+                report("ink", 0.6, "重建笔画")
+                ink_paths, im = stroke_layer(geo, M, A)
+            else:
+                fld, _ = line_field(geo, clean, weights_dir=wdir)
+                report("ink", 0.7, "描摹线条")
+                ink_paths = color_paths(trace_field(fld), geo)
+                # colour fill is repaired ONLY under the drawn lines: texture the line layer did
+                # not take (knit, wallpaper lines) stays in the colour layer
+                im = fld > 0.5
         elif lines and os.path.exists(os.path.join(wdir, "netG.pth")):
             # AI line model decides WHERE lines are; the original gives their width; strokes are
             # redrawn from centreline + smoothed width -> even, smooth lines
@@ -337,7 +347,7 @@ def main():
                     help="colour-layer tracer for band presets (default: own sub-pixel contour tracer)")
     ap.add_argument("--fine", action="store_true",
                     help="精细模式: line layer v3 + no AI downscale + 2x work size + thin-line protection")
-    ap.add_argument("--line-style", choices=["v3", "contour"], default=None,
+    ap.add_argument("--line-style", choices=["stroke", "v3", "contour"], default=None,
                     help="line layer: v3 (manga_line + lineart_anime, default) or contour (older)")
     ap.add_argument("--thin-thr", type=float, default=None,
                     help="protect faint thin structures from gradient smoothing (0 = off, fine mode 0.015)")
