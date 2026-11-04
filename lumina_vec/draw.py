@@ -11,7 +11,7 @@ import numpy as np
 import cv2
 from scipy import ndimage as ndi
 
-from .contour import fit_cubic, ink_field
+from .contour import fit_cubic, ink_field, _fit_one, _reparam, _max_err, _chord_params, _bezier_d1, _bezier_d2
 
 DIRS = np.stack([np.cos(np.linspace(0, np.pi, 36, endpoint=False)),
                  np.sin(np.linspace(0, np.pi, 36, endpoint=False))], 1)
@@ -66,6 +66,47 @@ def _unit(v):
     return v / n if n > 1e-9 else v
 
 
+def _no_inflection(ctrl, rel=0.05):
+    """True if the cubic bends one way only (C shape, no S)."""
+    t = np.linspace(0.02, 0.98, 25)
+    d1, d2 = _bezier_d1(ctrl, t), _bezier_d2(ctrl, t)
+    k = d1[:, 0] * d2[:, 1] - d1[:, 1] * d2[:, 0]
+    big = np.abs(k) > rel * np.abs(k).max() if np.abs(k).max() > 0 else np.zeros_like(k, bool)
+    return not (np.any(k[big] > 0) and np.any(k[big] < 0))
+
+
+def simple_pieces(pts, tol_min=1.3, tol_rel=0.05, tol_max=3.0, min_len=4.0, depth=0):
+    """Split a hand path into pieces that are each ONE straight line or ONE C-shaped cubic
+    (no S-bends, no wiggles). A piece that does not fit is cut at its worst point, and both
+    halves become separate strokes. Returns list of (ctrl 4x2, i0, i1) index ranges into pts."""
+    n = len(pts)
+    L = np.hypot(*np.diff(pts, axis=0).T).sum()
+    tol = float(np.clip(tol_rel * L, tol_min, tol_max))
+    a, b = pts[0], pts[-1]
+    ch = b - a; cl = np.hypot(*ch)
+    if cl > 1e-6:
+        dline = np.abs((pts[:, 0] - a[0]) * ch[1] - (pts[:, 1] - a[1]) * ch[0]) / cl
+    else:
+        dline = np.hypot(*(pts - a).T)
+    if dline.max() <= 0.8 * tol or n < 4 or L < min_len * 1.5 or depth > 8:
+        return [(np.array([a, a + ch / 3, b - ch / 3, b]), 0, n - 1)]
+    k = max(2, n // 6)
+    t1 = _unit(pts[k] - pts[0]); t2 = _unit(pts[-1 - k] - pts[-1])
+    u = _chord_params(pts)
+    ctrl = _fit_one(pts, u, t1, t2)
+    for _ in range(6):
+        u = _reparam(pts, ctrl, u); ctrl = _fit_one(pts, u, t1, t2)
+    err, at = _max_err(pts, ctrl, u)
+    if err <= tol and _no_inflection(ctrl):
+        return [(ctrl, 0, n - 1)]
+    # cut at the worst point (or at the line's farthest point if the curve had an S)
+    cut = at if err > tol else int(dline.argmax())
+    cut = int(np.clip(cut, 2, n - 3))
+    left = simple_pieces(pts[:cut + 1], tol_min, tol_rel, tol_max, min_len, depth + 1)
+    right = simple_pieces(pts[cut:], tol_min, tol_rel, tol_max, min_len, depth + 1)
+    return left + [(c, i0 + cut, i1 + cut) for c, i0, i1 in right]
+
+
 def _width_at(Pm, pts, tang, maxw=8.0):
     """Width of the sketch line across each point: length of the >0.5 run along the normal."""
     nrm = np.stack([-tang[:, 1], tang[:, 0]], 1)
@@ -118,23 +159,25 @@ def draw_strokes(P, cov, thr=0.5, min_len=3.0, fit_tol=0.9, max_strokes=6000, ws
             # a dot / speck: erase it and move on
             cv2.circle(R, (int(x), int(y)), 2, 0, -1); cv2.circle(Rs, (int(x), int(y)), 3, 0, -1)
             continue
-        # smooth the hand path a little, then fit with few cubics (fewer = more decisive)
-        pts = ndi.gaussian_filter1d(pts, 1.5, axis=0, mode="nearest")
-        t1 = _unit(pts[min(3, len(pts) - 1)] - pts[0]); t2 = _unit(pts[max(-4, -len(pts))] - pts[-1])
-        segs = fit_cubic(pts, t1, t2, fit_tol)
-        # samples along the fitted curve, width from the sketch, clamped by the original's ink
-        sm = np.vstack([bez_point(s, np.linspace(0, 1, max(4, int(np.hypot(*(s[3] - s[0])) * 2)))) for s in segs])
-        tang = np.gradient(sm, axis=0); tang /= np.maximum(np.hypot(*tang.T), 1e-9)[:, None]
-        w = _width_at(P, sm, tang)
-        if width_from is not None:
-            ink = _width_at(width_from, sm, tang)
-            w = np.where(ink > 0, np.minimum(w, np.maximum(ink, wmin)), w)
-        w = ndi.gaussian_filter1d(np.maximum(w, wmin) * wscale, 3, mode="nearest")
-        strokes.append(dict(segs=segs, pts=sm, w=w, free=[True, True]))
-        # erase what this stroke covers (a little wider: neighbouring pixels of the same line)
-        poly = outline(sm, w + 1.5, tang, [False, False])
+        # smooth the hand path a little, then: only straight lines or single C-curves
+        pts = ndi.gaussian_filter1d(pts, 3.0, axis=0, mode="nearest")
+        pieces = simple_pieces(pts)
+        allpolys = []
+        for pi, (ctrl, i0, i1) in enumerate(pieces):
+            seglen = np.hypot(*np.diff(pts[i0:i1 + 1], axis=0).T).sum() if i1 > i0 else 0
+            sm = bez_point(ctrl, np.linspace(0, 1, max(4, int(seglen * 2))))
+            tang = np.gradient(sm, axis=0); tang /= np.maximum(np.hypot(*tang.T), 1e-9)[:, None]
+            w = _width_at(P, sm, tang)
+            if width_from is not None:
+                ink = _width_at(width_from, sm, tang)
+                w = np.where(ink > 0, np.minimum(w, np.maximum(ink, wmin)), w)
+            w = ndi.gaussian_filter1d(np.maximum(w, wmin) * wscale, 3, mode="nearest")
+            free = [pi == 0, pi == len(pieces) - 1]          # cut points join: no taper
+            strokes.append(dict(segs=[ctrl], pts=sm, w=w, free=free))
+            allpolys.append(outline(sm, w + 1.5, tang, [False, False]))
+        # erase what these strokes cover (a little wider: neighbouring pixels of the same line)
         m = np.zeros((H, W), np.uint8)
-        cv2.fillPoly(m, [np.round(poly * 16).astype(np.int32)], 1, lineType=cv2.LINE_8, shift=4)
+        cv2.fillPoly(m, [np.round(pp * 16).astype(np.int32) for pp in allpolys], 1, lineType=cv2.LINE_8, shift=4)
         R[m > 0] = 0
         Rs = np.where(cv2.dilate(m, np.ones((5, 5), np.uint8)) > 0, cv2.GaussianBlur(R, (0, 0), 1.0), Rs)
     return strokes
@@ -151,9 +194,13 @@ def outline(pts, w, tang, taper=(True, True), taper_px=6.0):
             w *= np.clip(0.2 + 0.8 * (L - s) / tp, 0, 1)
     nrm = np.stack([-tang[:, 1], tang[:, 0]], 1)
     left = pts + nrm * (w / 2)[:, None]; right = pts - nrm * (w / 2)[:, None]
-    tip_e = pts[-1] + tang[-1] * w[-1] * 0.6
-    tip_s = pts[0] - tang[0] * w[0] * 0.6
-    return np.vstack([left, tip_e[None], right[::-1], tip_s[None]])
+    def cap(c, tt, ww, free):
+        if free:
+            return (c + tt * ww * 0.6)[None]
+        nn = np.array([-tt[1], tt[0]]); a = np.linspace(0, np.pi, 7)[1:-1]
+        return c + (np.cos(a)[:, None] * nn[None] + np.sin(a)[:, None] * tt[None]) * ww / 2
+    return np.vstack([left, cap(pts[-1], tang[-1], w[-1], taper[1]), right[::-1],
+                      cap(pts[0], -tang[0], w[0], taper[0])])
 
 
 # ------------------------------------------------------------------------- eyes
@@ -265,7 +312,7 @@ def stroke_svg(strokes, rgb, tol=0.4):
     for st in strokes:
         pts, w = st["pts"], st["w"]
         tang = np.gradient(pts, axis=0); tang /= np.maximum(np.hypot(*tang.T), 1e-9)[:, None]
-        poly = outline(pts, w, tang)
+        poly = outline(pts, w, tang, st.get("free", [True, True]))
         segs = fit_closed(np.vstack([poly, poly[:1]]), tol=tol, corner_deg=75)
         if not segs:
             continue
