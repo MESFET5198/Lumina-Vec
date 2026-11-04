@@ -130,7 +130,8 @@ def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_s
               bands=0, vote_sigma=3.0, l_weight=1.3, c_weight=2.0, blur_sigma=12.0, edge_thr=0.4, detail_overlay=True, ink=False, progress=None,
               print_mm=0.0, line_mm=0.42, lines="anime", weights_dir=None, hierarchical_mode=None, contour_lines=True,
               tracer="contour", label_sigma=1.0, thin_thr=0.0, line_style="v3",
-              palette_n=0, palette_de=2.5, region_color=False, region_smooth=False, tone_match=True):
+              palette_n=0, palette_de=2.5, region_color=False, region_smooth=False, tone_match=True,
+              eye_boxes=None, eye_colors=12):
     W, H = img.size
     # stage cost model (seconds per megapixel, CPU), calibrated on two test images; the AI step
     # scales with its (downscaled) input, everything else with the working resolution
@@ -208,6 +209,15 @@ def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_s
                 dl = min(max(h, w), 1536)
                 M = line_map(clean, "manga", detect_long=dl, weights_dir=wdir)
                 A = line_map(clean, "anime", detect_long=dl, weights_dir=wdir)
+                if eye_boxes:
+                    # inside the eyes the eye channel draws everything (lashes included, from
+                    # the original pixels): lens strokes made lash clusters into thick blobs
+                    em = np.zeros((h, w), np.uint8)
+                    for bx, by, bw, bh in eye_boxes:
+                        sx, sy = w / W, h / H
+                        cv2.ellipse(em, ((float((bx + bw / 2) * sx), float((by + bh / 2) * sy)),
+                                         (float(bw * sx * 0.85), float(bh * sy * 0.85)), 0), 1, -1)
+                    M = np.where(em > 0, 0, M); A = np.where(em > 0, 0, A)
                 report("ink", 0.6, "绘制线条")
                 ink_paths, _ = lens_layer(geo, M, A)
                 # colour under the lines is repaired where the original actually has ink
@@ -330,12 +340,21 @@ def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_s
             rgb, recol, _ = unify(rgb, extra + list(ink_paths), n=palette_n, min_de=palette_de)
             rgb = drop_slivers(rgb, keep_dark=0.08 if not ink else 0.0)
             extra, ink_paths = recol[:n_det], recol[n_det:]
+        eye_mask = None
+        if eye_boxes:
+            # eyes: their own fine channel - original pixels (no AI clean / smoothing), own
+            # palette, nothing merged; written into the label map so there is no patch edge
+            from .eyes import eye_patch
+            sx, sy = w / W, h / H
+            geo0 = np.asarray(img.convert("RGB").resize((w, h), Image.LANCZOS))
+            rgb, eye_mask = eye_patch(rgb, geo0, [(bx * sx, by * sy, bw * sx, bh * sy) for bx, by, bw, bh in eye_boxes],
+                                      k=eye_colors)
         if region_smooth:
             # colour regions drawn like the lines: small/thin bands merged, each boundary a few
             # smooth curves between real corners (lumina_vec/regions2.py)
             from .regions2 import merge_small, region_paths_smooth
             report("trace", 0.1, "合并碎色块")
-            rgb = merge_small(rgb)
+            rgb = merge_small(rgb, protect=eye_mask)
             report("trace", 0.4, "绘制色块边界")
             items = [(0, p) for p in region_paths_smooth(rgb)]
         else:
@@ -396,6 +415,8 @@ def main():
                     help="experimental colour pipeline: per-region colour from a 50%% image, merge, palette")
     ap.add_argument("--region-smooth", type=int, choices=[0, 1], default=None,
                     help="colour regions with smooth boundaries + merged small bands (fine mode: on)")
+    ap.add_argument("--eye", action="append", default=None, metavar="X,Y,W,H",
+                    help="eye box in original pixels (repeatable): drawn with the eye fine channel")
     ap.add_argument("--ink", type=int, choices=[0, 1], default=None,
                     help="separate smoothed outline layer (default: on for the grainy `shading` preset)")
     a = ap.parse_args()
@@ -409,6 +430,8 @@ def main():
         params = fine_params(src, params)
     if a.line_style:
         params["line_style"] = a.line_style
+    if a.eye:
+        params["eye_boxes"] = [tuple(float(v) for v in e.split(",")) for e in a.eye]
     if a.region_smooth is not None:
         params["region_smooth"] = bool(a.region_smooth)
     if a.region_color is not None:
@@ -426,7 +449,7 @@ def main():
         if a.bands is None and params.get("bands"):
             params["bands"] = 56            # fewer colours -> fewer filament recipes -> fewer splits per layer
     for k in params:
-        if k in ("ink", "print_mm", "line_mm", "lines", "line_style", "thin_thr", "palette_n", "region_color", "region_smooth"):
+        if k in ("ink", "print_mm", "line_mm", "lines", "line_style", "thin_thr", "palette_n", "region_color", "region_smooth", "eye_boxes"):
             continue
         v = getattr(a, k, None)
         if v is not None:

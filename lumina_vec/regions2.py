@@ -15,7 +15,7 @@ def _regions(post):
     return measure.label(key + 1, connectivity=1, background=0)
 
 
-def merge_small(post, min_area=80, min_halfwidth=2.0, iters=3, keep_de=6.0, tiny=20):
+def merge_small(post, min_area=80, min_halfwidth=2.0, iters=3, keep_de=6.0, tiny=20, protect=None):
     """Regions smaller than min_area px, or thinner than 2*min_halfwidth, take the colour of the
     neighbour closest in colour (OKLab), largest-first so merges cascade sensibly."""
     out = post.copy()
@@ -29,6 +29,9 @@ def merge_small(post, min_area=80, min_halfwidth=2.0, iters=3, keep_de=6.0, tiny
         dt = ndi.distance_transform_edt(~edge)
         hw = np.asarray(ndi.maximum(dt, reg, index=np.arange(n)))
         bad = (area < min_area) | (hw < min_halfwidth); bad[0] = False
+        if protect is not None:          # regions inside a protected area (eyes) are never merged
+            inside = np.bincount(reg[protect], minlength=n) > 0
+            bad &= ~inside
         if not bad.any():
             break
         objs = ndi.find_objects(reg)
