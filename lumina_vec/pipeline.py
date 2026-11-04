@@ -120,7 +120,7 @@ def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_s
               bands=0, vote_sigma=3.0, l_weight=1.3, c_weight=2.0, blur_sigma=12.0, edge_thr=0.4, detail_overlay=True, ink=False, progress=None,
               print_mm=0.0, line_mm=0.42, lines="anime", weights_dir=None, hierarchical_mode=None, contour_lines=True,
               tracer="contour", label_sigma=1.0, thin_thr=0.0, line_style="v3",
-              palette_n=0, palette_de=2.5):
+              palette_n=0, palette_de=2.5, region_color=False):
     W, H = img.size
     # stage cost model (seconds per megapixel, CPU), calibrated on two test images; the AI step
     # scales with its (downscaled) input, everything else with the working resolution
@@ -271,7 +271,17 @@ def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_s
             from .overlay import trace_details
             extra = trace_details(rgb, min_px=min_px)
             detail_overlay = False          # added below together with the lines
-        if palette_n:
+        if region_color:
+            # colour pipeline: shapes from the bands, colour per region from a 50 % copy of the
+            # (line-free) cleaned image, similar neighbours merged, one global palette for all
+            from .palette import region_pipeline
+            report("trace", 0.05, "区域取色")
+            n_det = len(extra)
+            rgb, recol = region_pipeline(rgb, clean, extra + list(ink_paths), n=palette_n or 128,
+                                         barrier=ink_cover if ink_cover is not None and ink_cover.shape == rgb.shape[:2] else None)
+            rgb = drop_slivers(rgb, keep_dark=0.08 if not ink else 0.0)
+            extra, ink_paths = recol[:n_det], recol[n_det:]
+        elif palette_n:
             # one global palette for every layer; same-colour neighbours then merge into one
             # region in region_paths (connected components of equal colour)
             from .palette import unify
@@ -333,6 +343,8 @@ def main():
                     help="protect faint thin structures from gradient smoothing (0 = off, fine mode 0.015)")
     ap.add_argument("--palette", type=int, default=None,
                     help="experimental: one global palette of N colours for all layers (0 = off)")
+    ap.add_argument("--region-color", type=int, choices=[0, 1], default=None,
+                    help="experimental colour pipeline: per-region colour from a 50%% image, merge, palette")
     ap.add_argument("--ink", type=int, choices=[0, 1], default=None,
                     help="separate smoothed outline layer (default: on for the grainy `shading` preset)")
     a = ap.parse_args()
@@ -346,6 +358,8 @@ def main():
         params = fine_params(src, params)
     if a.line_style:
         params["line_style"] = a.line_style
+    if a.region_color is not None:
+        params["region_color"] = bool(a.region_color)
     if a.palette is not None:
         params["palette_n"] = a.palette
     if a.thin_thr is not None:
@@ -359,7 +373,7 @@ def main():
         if a.bands is None and params.get("bands"):
             params["bands"] = 56            # fewer colours -> fewer filament recipes -> fewer splits per layer
     for k in params:
-        if k in ("ink", "print_mm", "line_mm", "lines", "line_style", "thin_thr", "palette_n"):
+        if k in ("ink", "print_mm", "line_mm", "lines", "line_style", "thin_thr", "palette_n", "region_color"):
             continue
         v = getattr(a, k, None)
         if v is not None:
