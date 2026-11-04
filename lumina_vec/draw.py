@@ -407,3 +407,29 @@ def lens_paths(strokes, rgb, wmin=0.8):
              + f"C{f(Rp[2])} {f(Rp[1])} {f(Rp[0])}Z")
         out.append('<path d="%s" fill="#%02x%02x%02x"/>' % (d, *(int(v) for v in col)))
     return out
+
+
+def strokes_from_graph(P, cov=None, wmin=0.8):
+    """Line FINDING from the centreline graph (strokes2.build_strokes: complete, pieces paired
+    through crossings, gaps bridged) + simple pieces (line / C, gentle S on long) per stroke,
+    in the same format as draw_strokes (for lens_paths)."""
+    from .strokes2 import build_strokes
+    out = []
+    for st in build_strokes(P):
+        pts = st["xy"]
+        if len(pts) < 3:
+            continue
+        pts = ndi.gaussian_filter1d(pts, 2.0, axis=0, mode="nearest")
+        pieces = simple_pieces(pts)
+        for pi, (ctrl, i0, i1) in enumerate(pieces):
+            seglen = np.hypot(*np.diff(pts[i0:i1 + 1], axis=0).T).sum() if i1 > i0 else 0
+            sm = bez_point(ctrl, np.linspace(0, 1, max(4, int(seglen * 2))))
+            tang = np.gradient(sm, axis=0); tang /= np.maximum(np.hypot(*tang.T), 1e-9)[:, None]
+            w = _width_at(P, sm, tang)
+            if cov is not None:
+                ink = _width_at(cov, sm, tang)
+                w = np.where(ink > 0, np.minimum(np.where(w > 0, w, ink), np.maximum(ink, wmin)), w)
+            w = ndi.gaussian_filter1d(np.maximum(w, wmin), 3, mode="nearest")
+            free = [st["free"][0] if pi == 0 else False, st["free"][1] if pi == len(pieces) - 1 else False]
+            out.append(dict(segs=[ctrl], pts=sm, w=w, free=free))
+    return out
