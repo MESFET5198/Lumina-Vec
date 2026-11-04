@@ -111,11 +111,42 @@ def work(job, raw, preset, overrides, fine=False):
             svgpath.write_text(svg, encoding='utf8')
             cairosvg.svg2png(bytestring=svg.encode(), write_to=str(pngpath), output_width=w, output_height=h)
             colors = len(set(m.lower() for m in re.findall(r'fill="(#[0-9a-fA-F]{6})"', svg)))
+            _thumb(job)
             _set(job, status='done', progress=1.0, stage='完成', svg=f'/file/{job}.svg', png=f'/file/{job}.png', width=w, height=h,
                  paths=svg.count('<path'), colors=colors, bytes=svgpath.stat().st_size,
                  seconds=round(secs, 1), version=__version__, preset=name, grain=round(grain, 2), params=params, finished=time.time())
     except Exception as e:
         _set(job, status='error', error=str(e)[:500])
+    finally:
+        _free_gpu()
+
+
+def _free_gpu():
+    """Give the CUDA cache back after each job (another service shares the GPU; the cache
+    otherwise stays reserved by this process: ~3.6 GiB observed)."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
+THUMB_PX = 200
+
+
+def _thumb(job):
+    """Small JPEG for the history list (the full PNG previews are up to ~5 MB each)."""
+    src = OUT / f'{job}.png'; dst = OUT / f'{job}.thumb.jpg'
+    if dst.is_file() or not src.is_file():
+        return dst if dst.is_file() else None
+    try:
+        with Image.open(src) as im:
+            im = im.convert('RGB'); im.thumbnail((THUMB_PX, THUMB_PX), Image.LANCZOS)
+            im.save(dst, 'JPEG', quality=82)
+        return dst
+    except OSError:
+        return None
 
 
 @app.get('/')
@@ -209,7 +240,7 @@ def delete_job(job):
             return jsonify(error='任务还在进行，不能删除'), 409
         jobs.pop(job)
         _save()
-    for f in (UP / f'{job}.source', OUT / f'{job}.svg', OUT / f'{job}.png'):
+    for f in (UP / f'{job}.source', OUT / f'{job}.svg', OUT / f'{job}.png', OUT / f'{job}.thumb.jpg'):
         f.unlink(missing_ok=True)
     return jsonify(ok=True)
 
@@ -229,13 +260,30 @@ def status(job):
 
 @app.get('/api/jobs')
 def list_jobs():
-    limit = min(max(request.args.get('limit', 200, type=int), 1), 1000)
+    """Newest first, paged: ?limit=20&offset=0. Returns {items, total, offset}."""
+    limit = min(max(request.args.get('limit', 20, type=int), 1), 200)
+    offset = max(request.args.get('offset', 0, type=int), 0)
     with lock:
+        allj = list(reversed(jobs.items()))
+        page = allj[offset:offset + limit]
         items = [dict(id=j, retry=bool(s.get('request')),
+                      thumb=f'/thumb/{j}' if s.get('png') else None,
                       **{k: s.get(k) for k in ('status', 'name', 'png', 'svg', 'preset', 'seconds', 'paths',
                                                'error', 'created')})
-                 for j, s in reversed(jobs.items())]
-    return jsonify(items[:limit])
+                 for j, s in page]
+    return jsonify(items=items, total=len(allj), offset=offset)
+
+
+@app.get('/thumb/<job>')
+def thumb(job):
+    if not re.fullmatch(r'[0-9a-f]{32}', job):
+        abort(404)
+    p = _thumb(job)
+    if not p:
+        abort(404)
+    resp = send_file(p, mimetype='image/jpeg')
+    resp.headers['Cache-Control'] = 'public, max-age=86400'
+    return resp
 
 
 @app.get('/file/<name>')

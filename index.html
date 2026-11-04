@@ -233,6 +233,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
         <button data-z="fit">适应</button>
         <button data-z="1">1:1</button>
         <button data-z="4">4×</button>
+        <button id="svgBtn" hidden title="路径很多，先显示 PNG 预览；点这里渲染真正的 SVG（可能会卡几秒）">加载 SVG</button>
       </div>
       <div class="progress" id="progress"><div class="pbox">
         <b id="pTitle">上传中</b><div class="bar" id="pbar"><i id="pfill"></i></div><small id="pText"></small>
@@ -246,7 +247,8 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       <div class="dl"><a class="btn primary" id="dlSvg" download>下载 SVG</a><a class="btn" id="dlPng" download>PNG 预览</a></div>
     </div>
 
-    <div class="panel history" id="history" hidden><h2>最近转换 <small id="hcount"></small></h2><div class="hlist" id="hlist"></div></div>
+    <div class="panel history" id="history" hidden><h2>最近转换 <small id="hcount"></small></h2><div class="hlist" id="hlist"></div>
+      <button class="btn" id="hmore" hidden style="margin-top:10px">加载更多</button></div>
   </section>
 </div>
 
@@ -367,8 +369,14 @@ function learn(r) { try { const mp = r.width * r.height / 1e6; if (mp && r.secon
   const old = +localStorage.getItem('lvec.spm') || 0, v = r.seconds / mp;
   localStorage.setItem('lvec.spm', old ? old * .6 + v * .4 : v); } } catch {} }
 
-function showResult(id, r) {
-  setView(srcURL || '/file/' + id + '.source', r.svg, r.width, r.height);
+const HEAVY_PATHS = 6000;    // above this a browser can freeze rendering the SVG: show the PNG first
+let curResult = null;
+function showResult(id, r, forceSvg) {
+  curResult = [id, r];
+  const heavy = (r.paths || 0) > HEAVY_PATHS && !forceSvg;
+  setView(srcURL || '/file/' + id + '.source', heavy ? r.png : r.svg, r.width, r.height);
+  $('#svgBtn').hidden = !heavy;
+  $('#lblR').textContent = heavy ? 'PNG 预览' : 'SVG';
   const p = r.params || {};
   const stats = [
     ['预设', r.preset + (preset === 'auto' ? ' (自动)' : '')],
@@ -386,19 +394,28 @@ function showResult(id, r) {
 }
 
 const ST = {queued: ['排队', 'q'], running: ['转换中', 'q'], error: ['失败', ''], interrupted: ['中断', '']};
-async function loadHistory() {
-  let items = []; try { items = await fetch('/api/jobs').then(r => r.json()); } catch {}
-  $('#history').hidden = !items.length;
-  $('#hcount').textContent = items.length ? `共 ${items.length} 条 · 保存在服务器 /data` : '';
-  $('#hlist').innerHTML = items.map(i => {
-    const st = ST[i.status], busy = i.status === 'queued' || i.status === 'running';
-    const thumb = i.png ? `<img loading="lazy" src="${i.png}" alt="">` : `<div class="ph">${st ? st[0] : ''}</div>`;
-    const acts = busy ? '' : `<div class="acts">${(i.status !== 'done' && i.retry) ? '<button data-act="retry" title="用原来的设置重新转换">重试</button>' : ''}<button data-act="del" title="删除记录和文件">删除</button></div>`;
-    const sub = i.status === 'done' ? `${i.preset || ''}${i.seconds ? ' · ' + i.seconds + 's' : ''}` : esc(i.error || (st ? st[0] : ''));
-    return `<div class="hitem${i.id===job?' cur':''}" data-id="${i.id}" data-status="${i.status}" title="${esc(i.name||'')}${i.error ? '\n' + esc(i.error) : ''}">
-      ${st ? `<i class="badge ${st[1]}">${st[0]}</i>` : ''}${acts}${thumb}<span>${esc(i.name || '')}</span><span>${sub}</span></div>`;
-  }).join('');
+const PAGE = 20;
+let hShown = 0, hTotal = 0;
+function hItem(i) {
+  const st = ST[i.status], busy = i.status === 'queued' || i.status === 'running';
+  const thumb = i.thumb ? `<img loading="lazy" decoding="async" width="92" height="92" src="${i.thumb}" alt="">` : `<div class="ph">${st ? st[0] : ''}</div>`;
+  const acts = busy ? '' : `<div class="acts">${(i.status !== 'done' && i.retry) ? '<button data-act="retry" title="用原来的设置重新转换">重试</button>' : ''}<button data-act="del" title="删除记录和文件">删除</button></div>`;
+  const sub = i.status === 'done' ? `${i.preset || ''}${i.seconds ? ' · ' + i.seconds + 's' : ''}` : esc(i.error || (st ? st[0] : ''));
+  return `<div class="hitem${i.id===job?' cur':''}" data-id="${i.id}" data-status="${i.status}" title="${esc(i.name||'')}${i.error ? '\n' + esc(i.error) : ''}">
+    ${st ? `<i class="badge ${st[1]}">${st[0]}</i>` : ''}${acts}${thumb}<span>${esc(i.name || '')}</span><span>${sub}</span></div>`;
 }
+async function loadHistory(more) {
+  const offset = more ? hShown : 0, limit = more ? PAGE : Math.max(PAGE, hShown);
+  let r = {items: [], total: 0};
+  try { r = await fetch(`/api/jobs?limit=${limit}&offset=${offset}`).then(r => r.json()); } catch {}
+  hTotal = r.total || 0; hShown = offset + (r.items || []).length;
+  $('#history').hidden = !hTotal;
+  $('#hcount').textContent = hTotal ? `共 ${hTotal} 条 · 显示 ${hShown} 条 · 保存在服务器 /data` : '';
+  const html = (r.items || []).map(hItem).join('');
+  if (more) $('#hlist').insertAdjacentHTML('beforeend', html); else $('#hlist').innerHTML = html;
+  $('#hmore').hidden = hShown >= hTotal;
+}
+$('#hmore').onclick = () => loadHistory(true);
 $('#hlist').onclick = async e => {
   const h = e.target.closest('.hitem'); if (!h) return;
   const id = h.dataset.id, act = e.target.closest('button')?.dataset.act;
@@ -453,6 +470,7 @@ function setMode(m, quiet) { mode = m; $('#toolbar').querySelectorAll('[data-mod
   b.classList.toggle('on', b.dataset.mode === m); b.style.display = (!hasB && b.dataset.mode !== 'a') ? 'none' : ''; });
   if (!quiet) apply(); }
 $('#toolbar').onclick = e => { const b = e.target.closest('button'); if (!b) return;
+  if (b.id === 'svgBtn') { if (curResult) showResult(curResult[0], curResult[1], true); return; }
   if (b.dataset.mode) return setMode(b.dataset.mode), apply();
   const r = viewer.getBoundingClientRect();
   if (b.dataset.z === 'fit') fit(); else zoomAt(+b.dataset.z, r.width / 2, r.height / 2); };
