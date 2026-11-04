@@ -474,7 +474,7 @@ def lens_paths(strokes, rgb, wmin=0.8):
     return out
 
 
-def strokes_from_graph(P, cov=None, wmin=0.8, adaptive=True):
+def strokes_from_graph(P, cov=None, wmin=0.8, adaptive=True, merge=True):
     """Line FINDING from the centreline graph (strokes2.build_strokes: complete, pieces paired
     through crossings, gaps bridged) + simple pieces (line / C, gentle S on long) per stroke,
     in the same format as draw_strokes (for lens_paths)."""
@@ -503,6 +503,8 @@ def strokes_from_graph(P, cov=None, wmin=0.8, adaptive=True):
             w = ndi.gaussian_filter1d(np.maximum(w, wmin), 3, mode="nearest")
             free = [st["free"][0] if pi == 0 else False, st["free"][1] if pi == len(pieces) - 1 else False]
             out.append(dict(segs=[ctrl], pts=sm, w=w, free=free))
+    if merge:
+        out = merge_pieces(out, P, cov, S)
     return out
 
 
@@ -546,3 +548,95 @@ def lens_layer(geo, M, A):
             out.append(tag); cover[m] = 1
     out += lens_paths(st, geo)
     return out, cover > 0
+
+
+def _fit_one_piece(pts, tol, s_len=40.0, s_px=1.5):
+    """One cubic over pts if it fits within tol (C always, S only if tiny or long); else None."""
+    if len(pts) < 4:
+        return None
+    L = np.hypot(*np.diff(pts, axis=0).T).sum()
+    u = _chord_params(pts)
+    c = _fit_free(pts, u)
+    for _ in range(4):
+        u = _reparam(pts, c, u); c = _fit_free(pts, u)
+    err, _ = _max_err(pts, c, u)
+    if err <= tol and (L >= s_len or _minor_bulge(pts) < s_px):
+        return c
+    return None
+
+
+def merge_pieces(strokes, P, cov=None, spacing=None, gap_max=16.0, cos_min=0.85, wmin=0.8):
+    """Several short pieces that together lie on one straight line / C curve (gentle S when long)
+    are replaced by that ONE curve. Candidate pairs: ends within an adaptive gap (0.7 x local
+    line spacing, 3..gap_max px), pointing at each other; accepted only if a single cubic fits
+    all their points within an adaptive tolerance. Greedy, closest pairs first, repeated."""
+    from scipy.spatial import cKDTree
+    items = [dict(pts=s["pts"], free=list(s.get("free", [True, True]))) for s in strokes]
+
+    def sp_at(q):
+        if spacing is None:
+            return 10.0
+        return float(spacing[int(np.clip(q[1], 0, spacing.shape[0] - 1)), int(np.clip(q[0], 0, spacing.shape[1] - 1))])
+
+    def odir(p, e):
+        k = min(4, len(p) - 1)
+        return _unit(p[0] - p[k]) if e == 0 else _unit(p[-1] - p[-1 - k])
+    changed = True
+    rounds = 0
+    while changed and rounds < 6:
+        changed = False; rounds += 1
+        ends = [(i, e) for i, it in enumerate(items) if it is not None and len(it["pts"]) >= 2 for e in (0, 1)]
+        if len(ends) < 2:
+            break
+        E = np.array([items[i]["pts"][0 if e == 0 else -1] for i, e in ends])
+        pairs = sorted(cKDTree(E).query_pairs(gap_max), key=lambda ab: np.linalg.norm(E[ab[0]] - E[ab[1]]))
+        used = set()
+        for a, b in pairs:
+            (i, ei), (j, ej) = ends[a], ends[b]
+            if i == j or i in used or j in used or items[i] is None or items[j] is None:
+                continue
+            gap = E[b] - E[a]; gl = np.linalg.norm(gap)
+            sp = sp_at((E[a] + E[b]) / 2)
+            # the direction + single-curve checks below are strict, so the gap may be generous;
+            # a long gap still needs faint line evidence underneath
+            if gl > float(np.clip(1.2 * sp, 4.0, gap_max)):
+                continue
+            if gl > 6.0:
+                k = np.linspace(0, 1, 9)[1:-1, None]
+                q = E[a] + gap * k
+                if ndi.map_coordinates(P, [q[:, 1], q[:, 0]], order=1).mean() < 0.1:
+                    continue
+            di, dj = odir(items[i]["pts"], ei), odir(items[j]["pts"], ej)
+            if np.dot(di, dj) > -cos_min:
+                continue
+            if gl > 1.0 and (np.dot(di, gap / gl) < cos_min * 0.8 or np.dot(dj, -gap / gl) < cos_min * 0.8):
+                continue
+            pi = items[i]["pts"] if ei == 1 else items[i]["pts"][::-1]
+            pj = items[j]["pts"] if ej == 0 else items[j]["pts"][::-1]
+            pts = _resample1(np.vstack([pi, pj]))
+            L = np.hypot(*np.diff(pts, axis=0).T).sum()
+            tol = float(np.clip(0.04 * L, 1.0, np.clip(0.3 * sp, 1.2, 3.0)))
+            c = _fit_one_piece(pts, tol)
+            if c is None:
+                continue
+            fi = items[i]["free"][0] if ei == 1 else items[i]["free"][1]
+            fj = items[j]["free"][1] if ej == 0 else items[j]["free"][0]
+            items[i] = dict(pts=bez_point(c, np.linspace(0, 1, max(4, int(L * 2)))), free=[fi, fj], ctrl=c)
+            items[j] = None
+            used |= {i, j}; changed = True
+    out = []
+    keep = {id(s["pts"]): s for s in strokes}
+    for it in items:
+        if it is None:
+            continue
+        if "ctrl" not in it and id(it["pts"]) in keep:
+            out.append(keep[id(it["pts"])]); continue
+        sm = it["pts"]
+        tang = np.gradient(sm, axis=0); tang /= np.maximum(np.hypot(*tang.T), 1e-9)[:, None]
+        w = _width_at(P, sm, tang)
+        if cov is not None:
+            ink = _width_at(cov, sm, tang)
+            w = np.where(ink > 0, np.minimum(np.where(w > 0, w, ink), np.maximum(ink, wmin)), w)
+        w = ndi.gaussian_filter1d(np.maximum(w, wmin), 3, mode="nearest")
+        out.append(dict(segs=[it["ctrl"]], pts=sm, w=w, free=it["free"]))
+    return out
