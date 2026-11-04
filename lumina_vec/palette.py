@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MESFET5198 - Lumina-Vec (https://github.com/MESFET5198/Lumina-Vec)
 """Global palette (the reference look: ~70-110 colours, each reused on many shapes, neighbouring
 palette colours >= ~2-3 OKLab*100 apart).
 

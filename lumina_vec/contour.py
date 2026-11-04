@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MESFET5198 - Lumina-Vec (https://github.com/MESFET5198/Lumina-Vec)
 """Line geometry from CONTINUOUS values.
 
 The old line path thresholded strokes into a 0/1 pixel mask and let vtracer trace it: a binary

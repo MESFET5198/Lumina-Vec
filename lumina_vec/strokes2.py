@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MESFET5198 - Lumina-Vec (https://github.com/MESFET5198/Lumina-Vec)
 """Line pipeline v4: STROKES.
 
 Line shape used to be decided pixel by pixel (model map x the original's ink), so every weak

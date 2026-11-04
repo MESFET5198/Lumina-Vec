@@ -1,0 +1,14 @@
+Lumina-Vec
+Copyright 2026 MESFET5198
+https://github.com/MESFET5198/Lumina-Vec
+
+This product includes software developed by MESFET5198 (Lumina-Vec).
+Redistributions and derivative works must keep this NOTICE file and the
+copyright, license and attribution notices in the source files.
+
+Third-party code included in this repository:
+- lumina_vec/manga_net.py: network definition from MangaLineExtraction_PyTorch,
+  MIT License, Copyright (c) 2021 Miaomiao Li.
+
+Model weights are not distributed with this repository; each is downloaded
+separately under its own license (see README).

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MESFET5198 - Lumina-Vec (https://github.com/MESFET5198/Lumina-Vec)
 """Eye fine channel (prototype). An eye is drawn by the artist as clean layers (iris bands,
 pupil, highlights, lid shadow); the global pipeline blurs them (AI clean, smoothing, a palette
 shared with the whole image). Inside each eye: original pixels, a palette of the eye's own

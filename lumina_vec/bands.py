@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MESFET5198 - Lumina-Vec (https://github.com/MESFET5198/Lumina-Vec)
 """Shading bands: turn smooth gradients into clean, contour-like colour steps.
 
 vtracer grows regions by merging similar neighbours, so a smooth gradient chains into one

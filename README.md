@@ -1,6 +1,6 @@
 # Lumina-Vec
 
-[![最新版本](https://img.shields.io/github/v/release/MESFET5198/Lumina-Vec?label=%E6%9C%80%E6%96%B0%E7%89%88%E6%9C%AC)](https://github.com/MESFET5198/Lumina-Vec/releases/latest)
+[![最新版本](https://img.shields.io/github/v/release/MESFET5198/Lumina-Vec?label=%E6%9C%80%E6%96%B0%E7%89%88%E6%9C%AC)](https://github.com/MESFET5198/Lumina-Vec/releases/latest) [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 把二次元插画转成 SVG，用于导入 [Lumina-Layers](https://github.com/lumina-layer-studio/Lumina-Layers) 做多色叠层 3D 打印。处理流程是：AI 去颗粒 → 明暗分层 → AI 线条层（两个线稿模型）→ 色块描摹（亚像素等值线 + 贝塞尔），另有专门针对打印的清理模式。各版本的改动见 [CHANGELOG](CHANGELOG.md) 或 [Releases](https://github.com/MESFET5198/Lumina-Vec/releases)。
 
@@ -60,12 +60,13 @@ Web UI 的"精细模式"开关，命令行 `--fine`：
 
 色差（越低越好）：
 
-| 图 | v0.7 默认 | v0.9 精细模式 | 参考 |
+| 图 | v0.7 默认 | v0.9.1 起精细模式 | 参考 |
 |---|---|---|---|
-| 精灵 | 3.18 | 2.43 | 1.73 |
-| 花纹背景 | 3.04 | 2.29 | 1.98 |
-| 雷电 | 2.34 | 2.23 | — |
-| 旗袍（颗粒重） | 3.97 | 3.94 | — |
+| 精灵 | 3.18 | 1.94 | 1.73 |
+| 花纹背景 | 3.04 | 2.09 | 1.98 |
+| 雷电 | 2.34 | 1.51 | — |
+| 狐耳 | 3.43 | 2.93 | 2.53 |
+| 旗袍（颗粒重） | 3.97 | 3.94 | 3.60 |
 
 代价是更慢（一张 1~3 MP 的图 2~6 分钟）。打印模式下线条层和色块描摹仍用旧方法，保证最小线宽和无缝拼接。
 
@@ -116,13 +117,19 @@ python -m lumina_vec.gcodecheck a.gcode b.gcode               # 切片后：对�
 - 印章小字这类小于 2 mm 的细节会糊掉；腮红会变成硬边色块；
 - 带色差特效（红青描边）的图，打印模式下青色边可能会丢失；
 - 打印模式下，线条与色块交界处会残留零星 1～2 像素的点。按像素统计会算进碎块数，但实际打印影响很小；
-- 精细模式：线稿本身对比度很低的图（浅蓝线条画在蓝色头发上这类）线条会断；眼睛内部的结构仍不如商业工具；狐耳那类细密针织纹会被合并掉一部分；
+- 精细模式：线稿本身对比度很低的图（浅蓝线条画在蓝色头发上这类）线条会断；眼睛内部的结构仍不如商业工具，2～3 px 的睫毛会变粗；狐耳那类细密针织纹会被合并掉一部分；
 - 厚涂图开启线条层时，眼睛高光可能变弱（雷电那类图建议保持关闭）；
 - 实现细节、实测数据和试过但放弃的方案，见 [docs/NOTES.md](docs/NOTES.md)。
 
 ## 版本与发布
 
 版本号用 `0.x`：加功能升第二位，只修问题升第三位。发布方法：在 `.github/release-notes/versions.txt` 加一行"版本号 提交"，并写好 `.github/release-notes/<版本号>.md`（第一行是标题），推到 `main` 后，GitHub Actions 会自动打 tag 并建 Release。在网页上手动打 `v*` tag 也会触发。
+
+## 许可
+
+Lumina-Vec 以 [Apache License 2.0](LICENSE) 发布：可以自由使用、修改、商用，但分发本项目或基于它的修改版（包括打包成程序）时，必须保留 [LICENSE](LICENSE)、[NOTICE](NOTICE) 和源码中的版权声明，并注明改动过的文件。不能把本项目的代码当成自己写的发布。
+
+Copyright 2026 MESFET5198
 
 ## 依赖与许可
 

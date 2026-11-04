@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MESFET5198 - Lumina-Vec (https://github.com/MESFET5198/Lumina-Vec)
 """Ink layer: thin, dark, neutral strokes (outlines) traced on their own from a smoothed,
 2x-supersampled mask, so line edges come out as clean curves of even width instead of
 inheriting the ragged per-pixel edge left by de-graining. Large dark areas (black hair)

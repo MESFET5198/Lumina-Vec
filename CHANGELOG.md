@@ -2,6 +2,11 @@
 
 各版本的详细说明，与 [GitHub Releases](https://github.com/MESFET5198/Lumina-Vec/releases) 相同。
 
+## 未发布
+
+- 加入许可证：Apache License 2.0（`LICENSE`、`NOTICE`），源码文件加版权声明，Web UI 标题下显示项目链接和许可。转换结果没有变化。
+- 文档：README 精细模式色差表更新到 v0.9.1 之后的数值；NOTES 补充碎线合并、眼睛专用通道、neroued_vectorizer 对比和待验证清单。
+
 ## v0.9.2 · Web UI 历史记录不再拖慢页面（2026-11-04）
 
 #### 修正

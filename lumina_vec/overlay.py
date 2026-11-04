@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MESFET5198 - Lumina-Vec (https://github.com/MESFET5198/Lumina-Vec)
 """Detail overlay: vtracer's hierarchical clustering merges tiny clusters into their
 neighbours, so a 3px mouth line or a nose dot vanishes even when the posterised image has it.
 We find small connected regions that contrast with their surroundings and trace each one

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MESFET5198 - Lumina-Vec (https://github.com/MESFET5198/Lumina-Vec)
 """Render SVGs with Chromium and score them against a de-grained (Gaussian) copy of the original.
 Metrics: mean OKLab dE (x100), SSIM (gray), edge-F1 (Canny on reference vs render, 2px tolerance)."""
 import sys, json, os, subprocess, tempfile, numpy as np, cv2

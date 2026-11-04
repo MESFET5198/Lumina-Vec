@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MESFET5198 - Lumina-Vec (https://github.com/MESFET5198/Lumina-Vec)
 """Printability check for an SVG before slicing.
 
     python -m lumina_vec.printcheck out.svg --print-mm 263 [--line-mm 0.42]

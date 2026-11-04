@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MESFET5198 - Lumina-Vec (https://github.com/MESFET5198/Lumina-Vec)
 """Minimal rasteriser for our own path data (M/L/H/V/C/Z, absolute): id maps for colour sampling."""
 import re
 import numpy as np

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MESFET5198 - Lumina-Vec (https://github.com/MESFET5198/Lumina-Vec)
 """Line pipeline v5 (prototype): DRAW the line-model map with Bezier strokes, one at a time.
 
 Like an artist inking over a sketch: find the strongest line not yet drawn, put the pen on it,

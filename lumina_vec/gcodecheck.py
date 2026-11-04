@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MESFET5198 - Lumina-Vec (https://github.com/MESFET5198/Lumina-Vec)
 """Compare sliced G-code: how much of the print is tiny islands, travel and retraction.
 
     python -m lumina_vec.gcodecheck before.gcode after.gcode

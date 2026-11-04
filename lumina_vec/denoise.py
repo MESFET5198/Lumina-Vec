@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MESFET5198 - Lumina-Vec (https://github.com/MESFET5198/Lumina-Vec)
 """AI pre-processing: Real-ESRGAN (realesr-animevideov3, SRVGGNetCompact) on CPU.
 
 Trick: downscale by 1/k first (averages grain away), then let the anime SR model

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MESFET5198 - Lumina-Vec (https://github.com/MESFET5198/Lumina-Vec)
 """Side-by-side crops: original | each rendered SVG."""
 import sys, numpy as np
 from PIL import Image, ImageDraw

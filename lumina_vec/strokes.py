@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MESFET5198 - Lumina-Vec (https://github.com/MESFET5198/Lumina-Vec)
 """Line layer as STROKES (prototype): the line model's map -> centrelines + width profile ->
 filled outlines with tapered free ends, fitted with cubic Beziers.
 

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MESFET5198 - Lumina-Vec (https://github.com/MESFET5198/Lumina-Vec)
 import io, json, os, re, threading, time, uuid
 from collections import OrderedDict
 from pathlib import Path

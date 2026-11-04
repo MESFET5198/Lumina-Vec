@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MESFET5198 - Lumina-Vec (https://github.com/MESFET5198/Lumina-Vec)
 """AI line-art extraction (ControlNet annotator models by lllyasviel, Apache-2.0).
 Network definitions copied from controlnet_aux so the project doesn't depend on that package.
 

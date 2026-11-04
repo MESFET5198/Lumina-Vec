@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MESFET5198 - Lumina-Vec (https://github.com/MESFET5198/Lumina-Vec)
 """Colour regions drawn like the lines: every boundary is a few smooth curves (one straight line
 / C / gentle S between real corners), not a pixel-faithful trace; tiny and thin bands are merged
 into their most similar neighbour first, so shading reads as a few calm shapes."""
