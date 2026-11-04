@@ -81,7 +81,25 @@ def _no_inflection(ctrl, rel=0.05):
     return not (np.any(k[big] > 0) and np.any(k[big] < 0))
 
 
-def simple_pieces(pts, tol_min=1.5, tol_rel=0.06, tol_max=4.0, min_len=4.0, depth=0, s_len=50.0):
+def _minor_bulge(pts):
+    """Size (px) of the smaller of the two bulges either side of the chord: ~0 for a straight
+    line or a C, large only for a real S."""
+    a, b = pts[0], pts[-1]; ch = b - a; cl = np.hypot(*ch)
+    if cl < 1e-6:
+        return 0.0
+    sd = ((pts[:, 0] - a[0]) * ch[1] - (pts[:, 1] - a[1]) * ch[0]) / cl
+    return float(min(sd.max(), -sd.min(), ) if sd.max() > 0 and sd.min() < 0 else 0.0)
+
+
+def _fit_free(pts, u):
+    """One cubic, ends fixed, both handles free (least squares)."""
+    b0, b1, b2, b3 = _bern(u)
+    M = np.hstack([b1, b2])
+    sol = np.linalg.lstsq(M, pts - b0 * pts[0] - b3 * pts[-1], rcond=None)[0]
+    return np.array([pts[0], sol[0], sol[1], pts[-1]])
+
+
+def simple_pieces(pts, tol_min=1.5, tol_rel=0.06, tol_max=4.0, min_len=4.0, depth=0, s_len=50.0, s_px=1.0):
     """Split a hand path into pieces that are each ONE straight line or ONE C-shaped cubic
     (no S-bends, no wiggles). A piece that does not fit is cut at its worst point, and both
     halves become separate strokes. Returns list of (ctrl 4x2, i0, i1) index ranges into pts."""
@@ -96,23 +114,70 @@ def simple_pieces(pts, tol_min=1.5, tol_rel=0.06, tol_max=4.0, min_len=4.0, dept
         dline = np.hypot(*(pts - a).T)
     if dline.max() <= 0.8 * tol or n < 4 or L < min_len * 1.5 or depth > 8:
         return [(np.array([a, a + ch / 3, b - ch / 3, b]), 0, n - 1)]
-    k = max(2, n // 6)
-    t1 = _unit(pts[k] - pts[0]); t2 = _unit(pts[-1 - k] - pts[-1])
     u = _chord_params(pts)
-    ctrl = _fit_one(pts, u, t1, t2)
-    for _ in range(6):
-        u = _reparam(pts, ctrl, u); ctrl = _fit_one(pts, u, t1, t2)
+    ctrl = _fit_free(pts, u)
+    for _ in range(4):
+        u = _reparam(pts, ctrl, u); ctrl = _fit_free(pts, u)
     err, at = _max_err(pts, ctrl, u)
-    # one cubic: C-shaped always; a gentle S only on long strokes (long hair strands are S-shaped,
-    # cutting them read as polygons); short strokes never wiggle
-    if err <= tol and (_no_inflection(ctrl) or L >= s_len):
+    # one cubic: straight / C always; an S only if it is tiny (< s_px, i.e. jitter) or the stroke
+    # is long (hair strands are S-shaped); short strokes never visibly wiggle
+    if err <= tol and (L >= s_len or _minor_bulge(pts) < s_px):
         return [(ctrl, 0, n - 1)]
     # cut at the worst point (or at the line's farthest point if the curve had an S)
-    cut = at if err > tol else int(dline.argmax())
+    if err > tol:
+        cut = at
+    else:                                   # an S: cut where the path crosses its chord
+        ch = pts[-1] - pts[0]; cl = max(np.hypot(*ch), 1e-6)
+        sd = ((pts[:, 0] - pts[0][0]) * ch[1] - (pts[:, 1] - pts[0][1]) * ch[0]) / cl
+        zc = np.flatnonzero(np.diff(np.sign(sd[1:-1]))) + 1
+        cut = int(zc[np.argmin(np.abs(zc - n // 2))]) if len(zc) else int(np.abs(sd).argmax())
     cut = int(np.clip(cut, 2, n - 3))
-    left = simple_pieces(pts[:cut + 1], tol_min, tol_rel, tol_max, min_len, depth + 1, s_len)
-    right = simple_pieces(pts[cut:], tol_min, tol_rel, tol_max, min_len, depth + 1, s_len)
+    left = simple_pieces(pts[:cut + 1], tol_min, tol_rel, tol_max, min_len, depth + 1, s_len, s_px)
+    right = simple_pieces(pts[cut:], tol_min, tol_rel, tol_max, min_len, depth + 1, s_len, s_px)
     return left + [(c, i0 + cut, i1 + cut) for c, i0, i1 in right]
+
+
+def _turn_corners(pts, ang_deg=35.0, k=4):
+    """Indices where the path really turns (angle between the directions k samples before and
+    after > ang_deg), local maxima only."""
+    n = len(pts)
+    if n < 2 * k + 3:
+        return []
+    a = pts[k:-k] - pts[:-2 * k]; b = pts[2 * k:] - pts[k:-k]
+    cs = (a * b).sum(1) / np.maximum(np.hypot(*a.T) * np.hypot(*b.T), 1e-9)
+    ang = np.degrees(np.arccos(np.clip(cs, -1, 1)))
+    idx = []
+    for i in np.flatnonzero(ang > ang_deg):
+        if ang[i] >= ang[max(i - 1, 0)] and ang[i] >= ang[min(i + 1, len(ang) - 1)]:
+            j = i + k
+            if not idx or j - idx[-1] > 2 * k:
+                idx.append(j)
+    return idx
+
+
+def _resample1(pts, step=1.0):
+    d = np.r_[0, np.cumsum(np.hypot(*np.diff(pts, axis=0).T))]
+    if d[-1] < 2 * step:
+        return pts
+    s = np.arange(0, d[-1] + 1e-6, step)
+    return np.c_[np.interp(s, d, pts[:, 0]), np.interp(s, d, pts[:, 1])]
+
+
+def adaptive_pieces(pts, spacing_px, s_len=40.0):
+    """Cut only at real turns; then each run is one cubic (C, or a gentle S when long) fitted with
+    a tolerance that follows the local line spacing: loose in open areas, tight where lines
+    are dense (there a loose curve would wander onto the neighbouring strand)."""
+    cuts = [0] + _turn_corners(pts, ang_deg=40.0, k=5) + [len(pts) - 1]   # pts at 1 px steps
+    out = []
+    for i0, i1 in zip(cuts[:-1], cuts[1:]):
+        if i1 - i0 < 1:
+            continue
+        run = pts[i0:i1 + 1]
+        L = np.hypot(*np.diff(run, axis=0).T).sum()
+        tmax = float(np.clip(0.3 * spacing_px, 1.2, 4.0))
+        for c, a, b in simple_pieces(run, tol_min=1.2, tol_rel=0.06, tol_max=tmax, s_len=s_len):
+            out.append((c, a + i0, b + i0))
+    return out
 
 
 def _width_at(Pm, pts, tang, maxw=8.0):
@@ -409,18 +474,24 @@ def lens_paths(strokes, rgb, wmin=0.8):
     return out
 
 
-def strokes_from_graph(P, cov=None, wmin=0.8):
+def strokes_from_graph(P, cov=None, wmin=0.8, adaptive=True):
     """Line FINDING from the centreline graph (strokes2.build_strokes: complete, pieces paired
     through crossings, gaps bridged) + simple pieces (line / C, gentle S on long) per stroke,
     in the same format as draw_strokes (for lens_paths)."""
-    from .strokes2 import build_strokes
+    from .strokes2 import build_strokes, line_spacing
     out = []
-    for st in build_strokes(P):
+    S = line_spacing(P) if adaptive else None
+    for st in build_strokes(P, spacing=S):
         pts = st["xy"]
         if len(pts) < 3:
             continue
-        pts = ndi.gaussian_filter1d(pts, 2.0, axis=0, mode="nearest")
-        pieces = simple_pieces(pts)
+        pts = _resample1(pts)
+        pts = ndi.gaussian_filter1d(pts, 1.5, axis=0, mode="nearest")
+        if adaptive:
+            yi = np.clip(pts[:, 1].astype(int), 0, S.shape[0] - 1); xi = np.clip(pts[:, 0].astype(int), 0, S.shape[1] - 1)
+            pieces = adaptive_pieces(pts, float(np.median(S[yi, xi])))
+        else:
+            pieces = simple_pieces(pts)
         for pi, (ctrl, i0, i1) in enumerate(pieces):
             seglen = np.hypot(*np.diff(pts[i0:i1 + 1], axis=0).T).sum() if i1 > i0 else 0
             sm = bez_point(ctrl, np.linspace(0, 1, max(4, int(seglen * 2))))

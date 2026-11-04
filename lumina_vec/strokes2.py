@@ -88,7 +88,19 @@ def blob_mask(P, cov, wide_px=5.0, ink=0.35, core_area=30, hole_px=60):
     return big[cc]
 
 
-def build_strokes(P, ss=2, thr=0.5, join_cos=-0.7, bridge_px=4.0, bridge_cos=0.8, min_len=2.5, blob=None):
+def line_spacing(P, thr=0.5, win=25):
+    """Typical gap between neighbouring lines around each pixel (work px): 2 x the mean distance
+    from background pixels to the nearest line, averaged over a window. Small = dense area."""
+    mask = P > thr
+    D = ndi.distance_transform_edt(~mask).astype(np.float32)
+    bg = (~mask).astype(np.float32)
+    num = cv2.boxFilter(D * bg, -1, (win, win), normalize=False)
+    den = cv2.boxFilter(bg, -1, (win, win), normalize=False)
+    return 2 * num / np.maximum(den, 1)
+
+
+def build_strokes(P, ss=2, thr=0.5, join_cos=-0.7, bridge_px=4.0, bridge_cos=0.8, min_len=2.5, blob=None,
+                  spacing=None, bridge_max=12.0, bridge_frac=0.7, bridge_cos_loose=0.6):
     """Centreline strokes from the probability map P (work px).
     Returns list of dict(xy (n,2) in work px, mw (n,) model width px, free=[start,end])."""
     up = cv2.resize(P, None, fx=ss, fy=ss, interpolation=cv2.INTER_CUBIC)
@@ -174,14 +186,32 @@ def build_strokes(P, ss=2, thr=0.5, join_cos=-0.7, bridge_px=4.0, bridge_cos=0.8
     if len(free) > 1:
         pts = np.array([branches[b]["p"][0 if e == 0 else -1] for b, e in free])
         tree = cKDTree(pts)
-        pairs = sorted(tree.query_pairs(bridge_px * ss), key=lambda ab: np.linalg.norm(pts[ab[0]] - pts[ab[1]]))
+        reach = bridge_max if spacing is not None else bridge_px
+        pairs = sorted(tree.query_pairs(reach * ss), key=lambda ab: np.linalg.norm(pts[ab[0]] - pts[ab[1]]))
         for a, c in pairs:
             fa, fc = free[a], free[c]
             if fa[0] == fc[0] or fa in link or fc in link:
                 continue
+            gl = np.linalg.norm(pts[c] - pts[a]) / ss                 # gap in work px
+            if spacing is not None:
+                # adaptive: a gap may be bridged up to ~0.7 x the local line spacing (dense hair:
+                # short bridges only, so a strand never jumps to its neighbour; open areas: long)
+                mid = (pts[a] + pts[c]) / 2 / ss
+                sp = spacing[int(np.clip(mid[0], 0, spacing.shape[0] - 1)), int(np.clip(mid[1], 0, spacing.shape[1] - 1))]
+                lim = float(np.clip(bridge_frac * sp, bridge_px, bridge_max))
+                if gl > lim:
+                    continue
+                cmin = bridge_cos if gl <= bridge_px else bridge_cos_loose
+                if gl > bridge_px:                                    # longer bridges need faint support
+                    k = np.linspace(0, 1, 9)[1:-1, None]
+                    q = (pts[a] + (pts[c] - pts[a]) * k) / ss
+                    if ndi.map_coordinates(P, [q[:, 0], q[:, 1]], order=1).mean() < 0.12:
+                        continue
+            else:
+                cmin = bridge_cos
             da, dc = -end_dir(*fa), -end_dir(*fc)          # outward directions
             gap = _unit(pts[c] - pts[a])
-            if np.dot(da, gap) > bridge_cos and np.dot(dc, -gap) > bridge_cos:
+            if np.dot(da, gap) > cmin and np.dot(dc, -gap) > cmin and np.dot(da, dc) < -cmin:
                 link[fa] = (*fc, 0); link[fc] = (*fa, 0)
     # 4. walk chains
     seen = np.zeros(nb_, bool)
