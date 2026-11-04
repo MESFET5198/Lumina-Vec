@@ -119,7 +119,8 @@ def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_s
               clean=None,
               bands=0, vote_sigma=3.0, l_weight=1.3, c_weight=2.0, blur_sigma=12.0, edge_thr=0.4, detail_overlay=True, ink=False, progress=None,
               print_mm=0.0, line_mm=0.42, lines="anime", weights_dir=None, hierarchical_mode=None, contour_lines=True,
-              tracer="contour", label_sigma=1.0, thin_thr=0.0, line_style="v3"):
+              tracer="contour", label_sigma=1.0, thin_thr=0.0, line_style="v3",
+              palette_n=0, palette_de=2.5):
     W, H = img.size
     # stage cost model (seconds per megapixel, CPU), calibrated on two test images; the AI step
     # scales with its (downscaled) input, everything else with the working resolution
@@ -265,10 +266,24 @@ def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_s
         if label_sigma > 0:
             rgb = smooth_labels(rgb, sigma=label_sigma)
         rgb = drop_slivers(rgb, keep_dark=0.08 if not ink else 0.0)
+        extra = []
+        if detail_overlay:
+            from .overlay import trace_details
+            extra = trace_details(rgb, min_px=min_px)
+            detail_overlay = False          # added below together with the lines
+        if palette_n:
+            # one global palette for every layer; same-colour neighbours then merge into one
+            # region in region_paths (connected components of equal colour)
+            from .palette import unify
+            report("trace", 0.05, "统一调色板")
+            n_det = len(extra)
+            rgb, recol, _ = unify(rgb, extra + list(ink_paths), n=palette_n, min_de=palette_de)
+            rgb = drop_slivers(rgb, keep_dark=0.08 if not ink else 0.0)
+            extra, ink_paths = recol[:n_det], recol[n_det:]
         items = region_paths(rgb, min_area=max(6, int(min_px * min_px)) if min_px else 6,
                              progress=lambda f: report("trace", 0.1 + 0.9 * f, f"{f * 100:.0f}%"))
         svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}">\n'
-               + "\n".join(p for _, p in items) + "\n</svg>")
+               + "\n".join([p for _, p in items] + extra) + "\n</svg>")
         hierarchical = "stacked"
     else:
         report("trace", 0.0, "这一步无法细分，请稍候")
@@ -316,6 +331,8 @@ def main():
                     help="line layer: v3 (manga_line + lineart_anime, default) or contour (older)")
     ap.add_argument("--thin-thr", type=float, default=None,
                     help="protect faint thin structures from gradient smoothing (0 = off, fine mode 0.015)")
+    ap.add_argument("--palette", type=int, default=None,
+                    help="experimental: one global palette of N colours for all layers (0 = off)")
     ap.add_argument("--ink", type=int, choices=[0, 1], default=None,
                     help="separate smoothed outline layer (default: on for the grainy `shading` preset)")
     a = ap.parse_args()
@@ -329,6 +346,8 @@ def main():
         params = fine_params(src, params)
     if a.line_style:
         params["line_style"] = a.line_style
+    if a.palette is not None:
+        params["palette_n"] = a.palette
     if a.thin_thr is not None:
         params["thin_thr"] = a.thin_thr
     if a.ink is not None:
@@ -340,7 +359,7 @@ def main():
         if a.bands is None and params.get("bands"):
             params["bands"] = 56            # fewer colours -> fewer filament recipes -> fewer splits per layer
     for k in params:
-        if k in ("ink", "print_mm", "line_mm", "lines", "line_style", "thin_thr"):
+        if k in ("ink", "print_mm", "line_mm", "lines", "line_style", "thin_thr", "palette_n"):
             continue
         v = getattr(a, k, None)
         if v is not None:
