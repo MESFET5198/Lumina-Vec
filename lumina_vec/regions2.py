@@ -15,7 +15,7 @@ def _regions(post):
     return measure.label(key + 1, connectivity=1, background=0)
 
 
-def merge_small(post, min_area=80, min_halfwidth=2.0, iters=3):
+def merge_small(post, min_area=80, min_halfwidth=2.0, iters=3, keep_de=6.0, tiny=20):
     """Regions smaller than min_area px, or thinner than 2*min_halfwidth, take the colour of the
     neighbour closest in colour (OKLab), largest-first so merges cascade sensibly."""
     out = post.copy()
@@ -54,6 +54,10 @@ def merge_small(post, min_area=80, min_halfwidth=2.0, iters=3):
                 d = np.sum((c - my) ** 2)
                 if d < bd:
                     bd, best = d, q
+            # a small/thin region that clearly differs from every neighbour is a deliberate detail
+            # (highlight on a belt, eye detail, ruffle stripe): keep it unless it is a speck
+            if np.sqrt(bd) * 100 > keep_de and area[r] >= tiny:
+                continue
             qm = (sub == best) & ring
             col = out[y0:y1, x0:x1][qm][0]
             out[y0:y1, x0:x1][m] = col
@@ -71,8 +75,9 @@ def fit_closed_smooth(poly, tol=1.5, corner_deg=50.0, smooth=1.5):
     n = len(p)
     if n < 8:
         return []
-    pw = np.vstack([p[-10:], p, p[:10]])
-    pw = ndi.gaussian_filter1d(pw, smooth, axis=0, mode="nearest")[10:-10]
+    k = min(10, n)
+    pw = np.vstack([p[-k:], p, p[:k]])
+    pw = ndi.gaussian_filter1d(pw, smooth, axis=0, mode="nearest")[k:k + n]
     ext = np.vstack([pw[-5:], pw, pw[:5]])
     cs = [c - 5 for c in _turn_corners(ext, corner_deg, 5) if 5 <= c < n + 5]
     cs = sorted(set(int(c) % n for c in cs))
