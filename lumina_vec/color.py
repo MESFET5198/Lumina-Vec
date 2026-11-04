@@ -15,6 +15,20 @@ def srgb_to_oklab(rgb):
     return lms @ M2.T
 
 
+def oklab_to_srgb(lab):
+    """Inverse of srgb_to_oklab; returns float sRGB 0..255 (unclipped)."""
+    M2i = np.linalg.inv(np.array([[0.2104542553, 0.7936177850, -0.0040720468],
+                                  [1.9779984951, -2.4285922050, 0.4505937099],
+                                  [0.0259040371, 0.7827717662, -0.8086757660]], np.float64))
+    M1i = np.linalg.inv(np.array([[0.4122214708, 0.5363325363, 0.0514459929],
+                                  [0.2119034982, 0.6806995451, 0.1073969566],
+                                  [0.0883024619, 0.2817188376, 0.6299787005]], np.float64))
+    lms = (lab.astype(np.float64) @ M2i.T) ** 3
+    c = np.clip(lms @ M1i.T, 0, 1)
+    c = np.where(c <= 0.0031308, c * 12.92, 1.055 * c ** (1 / 2.4) - 0.055)
+    return (c * 255).astype(np.float32)
+
+
 def flat_sample(rgb_flat, n, power=0.4, seed=0):
     """Sample pixels with probability ~ count(colour bin)^(power-1), so rare but distinct
     hues (an iris, a highlight) are represented instead of drowned by large flat areas."""

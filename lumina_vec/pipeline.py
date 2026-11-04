@@ -114,13 +114,23 @@ def fine_params(img: Image.Image, params: dict) -> dict:
     return p
 
 
+def match_tone(clean, ref, sigma=6.0):
+    """clean + blur(ref) - blur(clean) in OKLab: local mean colour of `ref`, detail of `clean`.
+    Blurs are edge-aware enough at this sigma for flat anime fills; a large sigma keeps the
+    grain of `ref` out."""
+    from .color import srgb_to_oklab, oklab_to_srgb
+    a = srgb_to_oklab(clean).astype(np.float32); b = srgb_to_oklab(ref).astype(np.float32)
+    d = cv2.GaussianBlur(b, (0, 0), sigma) - cv2.GaussianBlur(a, (0, 0), sigma)
+    return np.clip(oklab_to_srgb(a + d), 0, 255).astype(np.uint8)
+
+
 def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_sp=8, ms_sr=14,
               filter_speckle=12, layer_difference=10, simplify=1.5, color_precision=6, ai=True,
               clean=None,
               bands=0, vote_sigma=3.0, l_weight=1.3, c_weight=2.0, blur_sigma=12.0, edge_thr=0.4, detail_overlay=True, ink=False, progress=None,
               print_mm=0.0, line_mm=0.42, lines="anime", weights_dir=None, hierarchical_mode=None, contour_lines=True,
               tracer="contour", label_sigma=1.0, thin_thr=0.0, line_style="v3",
-              palette_n=0, palette_de=2.5, region_color=False, region_smooth=False):
+              palette_n=0, palette_de=2.5, region_color=False, region_smooth=False, tone_match=True):
     W, H = img.size
     # stage cost model (seconds per megapixel, CPU), calibrated on two test images; the AI step
     # scales with its (downscaled) input, everything else with the working resolution
@@ -153,6 +163,11 @@ def vectorize(img: Image.Image, weights=None, pre_down=2.0, work_scale=1.5, ms_s
     else:
         work = img.convert("RGB").resize((round(W * work_scale), round(H * work_scale)), Image.LANCZOS)
     rgb = np.asarray(work.convert("RGB"))
+    if tone_match and (ai or clean is not None):
+        # Real-ESRGAN brightens and desaturates (pale skin went whiter: L 93.9 -> 95.2, chroma
+        # 1.93 -> 1.77). Keep its detail/denoising, take the low-frequency tone from the original
+        rgb = match_tone(rgb, np.asarray(img.convert("RGB").resize((rgb.shape[1], rgb.shape[0]), Image.LANCZOS)))
+        work = Image.fromarray(rgb)
     clean = rgb
     report("flat")
     if ms_sp > 0:
