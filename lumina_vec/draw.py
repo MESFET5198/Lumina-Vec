@@ -358,3 +358,52 @@ def stroke_svg(strokes, rgb, tol=0.4):
         d = "M%.2f,%.2f" % tuple(segs[0][0]) + "".join("C%.2f,%.2f %.2f,%.2f %.2f,%.2f" % (*s[1], *s[2], *s[3]) for s in segs)
         out.append('<path d="%sZ" fill="#%02x%02x%02x"/>' % (d, *(int(v) for v in col)))
     return out
+
+
+# ------------------------------------------------- lens output: a line = TWO cubic Beziers
+
+def _bern(t):
+    t = t[:, None]; mt = 1 - t
+    return mt ** 3, 3 * mt * mt * t, 3 * mt * t * t, t ** 3
+
+
+def _edge_cubic(E, t, a, b):
+    """One cubic with fixed ends a, b that best fits edge points E(t) (least squares)."""
+    b0, b1, b2, b3 = _bern(t)
+    rhs = E - b0 * a - b3 * b
+    M = np.hstack([b1, b2])                        # (n,2) basis for P1, P2
+    G = M.T @ M + 1e-6 * np.eye(2)
+    sol = np.linalg.solve(G, M.T @ rhs)            # (2,2): rows P1, P2
+    return np.array([a, sol[0], sol[1], b])
+
+
+def lens_paths(strokes, rgb, wmin=0.8):
+    """Each stroke -> closed path of exactly two cubics (left edge, right edge), sharing the tips
+    at free ends; at joined ends the edges stay apart by the line width (short straight cap)."""
+    H, W = rgb.shape[:2]
+    lum = rgb.astype(np.float32) @ np.array([0.299, 0.587, 0.114], np.float32)
+    out = []
+    for st in strokes:
+        C = st["segs"][0]
+        n = len(st["pts"]); t = np.linspace(0, 1, n)
+        pts = bez_point(C, t)
+        d1 = _bezier_d1(C, t); d1 /= np.maximum(np.hypot(*d1.T), 1e-9)[:, None]
+        nrm = np.stack([-d1[:, 1], d1[:, 0]], 1)
+        w = np.maximum(st["w"], wmin)
+        f0, f1 = st.get("free", [True, True])
+        hw0 = 0.0 if f0 else w[0] / 2
+        hw1 = 0.0 if f1 else w[-1] / 2
+        # target half-width: measured, pinned to the end widths (0 at a free tip)
+        half = w / 2
+        half = half.copy(); half[0], half[-1] = hw0, hw1
+        Lp = _edge_cubic(pts + nrm * half[:, None], t, pts[0] + nrm[0] * hw0, pts[-1] + nrm[-1] * hw1)
+        Rp = _edge_cubic(pts - nrm * half[:, None], t, pts[0] - nrm[0] * hw0, pts[-1] - nrm[-1] * hw1)
+        xi = np.clip(pts[:, 0].astype(int), 0, W - 1); yi = np.clip(pts[:, 1].astype(int), 0, H - 1)
+        px = rgb[yi, xi].astype(float); l = lum[yi, xi]
+        col = px[l <= np.median(l)].mean(0)
+        f = lambda p: "%.2f,%.2f" % tuple(p)
+        d = (f"M{f(Lp[0])}C{f(Lp[1])} {f(Lp[2])} {f(Lp[3])}"
+             + ("" if f1 else f"L{f(Rp[3])}")
+             + f"C{f(Rp[2])} {f(Rp[1])} {f(Rp[0])}Z")
+        out.append('<path d="%s" fill="#%02x%02x%02x"/>' % (d, *(int(v) for v in col)))
+    return out
