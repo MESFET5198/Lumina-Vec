@@ -138,7 +138,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 <body>
 <header>
   <div class="logo"></div>
-  <div><h1>Lumina-Vec</h1><div class="sub">二次元插画 → 叠色打印用 SVG</div></div>
+  <div><h1>Lumina-Vec <span id="ver" style="font-size:12px;font-weight:400;color:var(--muted)"></span></h1><div class="sub">二次元插画 → 叠色打印用 SVG</div></div>
   <div class="health"><i class="dot" id="hdot"></i><span id="htext">检查服务…</span></div>
 </header>
 
@@ -173,7 +173,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       <div class="field">
         <label>精细模式 <span class="tag">实验</span></label>
         <div class="seg" id="fine"><button data-v="" class="on">关</button><button data-v="1">开</button></div>
-        <div class="hint">新线条层（manga_line + lineart_anime）；颗粒不重的图不再先缩小再去颗粒，工作分辨率 2 倍，淡的细纹（背景花纹、针织纹、发丝）不被平滑掉。更慢，路径更多。</div>
+        <div class="hint">线条：每条线由两条贝塞尔曲线组成，连贯、两端收尖；色块：碎色带先合并，边界用少量平滑曲线。颗粒不重的图不再先缩小再去颗粒，工作分辨率 2 倍，淡的细纹（背景花纹、针织纹）不被平滑掉。更慢。</div>
       </div>
       <details>
         <summary>高级选项</summary>
@@ -194,13 +194,18 @@ input[type=range]{width:100%;accent-color:var(--accent)}
         </div>
         <div class="field">
           <label>线条风格</label>
-          <div class="seg" id="lineStyle"><button data-v="" class="on">新（v3）</button><button data-v="contour">旧</button></div>
-          <div class="hint">新：两个线稿模型定位置、原图墨色定粗细，线条连贯、交叉处干净。打印模式固定用旧方法（保证最小线宽）。</div>
+          <div class="seg" id="lineStyle"><button data-v="" class="on">自动</button><button data-v="lens">双曲线</button><button data-v="v3">v3</button><button data-v="contour">旧</button></div>
+          <div class="hint">自动：精细模式用"双曲线"（每条线两条贝塞尔曲线），普通模式用 v3（两个线稿模型 + 原图墨色）。打印模式固定用旧方法，保证最小线宽。</div>
         </div>
         <div class="field">
           <label>细纹保护</label>
           <div class="seg" id="thin"><button data-v="" class="on">自动</button><button data-v="1">开</button><button data-v="0">关</button></div>
           <div class="hint">保护淡的细线不被渐变平滑抹掉。自动 = 精细模式下对颗粒不重的图开启。颗粒重的图开启会把噪点也留下。</div>
+        </div>
+        <div class="field">
+          <label>平滑色块</label>
+          <div class="seg" id="rsmooth"><button data-v="" class="on">自动</button><button data-v="1">开</button><button data-v="0">关</button></div>
+          <div class="hint">太小、太窄的色带并入最接近的相邻颜色，边界只在真正的转角处断开、每段一条平滑曲线。自动 = 精细模式下开启。</div>
         </div>
         <div class="field">
           <label>色块描摹</label>
@@ -256,7 +261,7 @@ const PRESETS = [
   ['detail','Detail','不分层，保留更多细节'],
   ['flat','Flat','更少更大的色块，会丢细笔画'],
 ];
-let file = null, preset = 'auto', ink = '', lines = '', fine = '', lineStyle = '', thin = '', tracer = '', job = null, poll = null, srcURL = null;
+let file = null, preset = 'auto', ink = '', lines = '', fine = '', lineStyle = '', thin = '', tracer = '', rsmooth = '', job = null, poll = null, srcURL = null;
 
 // ---------- presets & options
 $('#presets').innerHTML = PRESETS.map(([v,t,d,rec]) =>
@@ -271,7 +276,7 @@ $('#ink').onclick = e => { const b = e.target.closest('button'); if (!b) return;
   $('#ink').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); };
 const seg = (id, set) => $(id).onclick = e => { const b = e.target.closest('button'); if (!b) return; set(b.dataset.v);
   $(id).querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); };
-seg('#fine', v => fine = v); seg('#lineStyle', v => lineStyle = v); seg('#thin', v => thin = v); seg('#tracer', v => tracer = v);
+seg('#fine', v => fine = v); seg('#lineStyle', v => lineStyle = v); seg('#thin', v => thin = v); seg('#tracer', v => tracer = v); seg('#rsmooth', v => rsmooth = v);
 
 try { const [pm, lm] = JSON.parse(localStorage.getItem('lvec.print') || '[]'); if (pm) $('#printMm').value = pm; if (lm) $('#lineMm').value = lm; } catch {}
 
@@ -308,6 +313,7 @@ $('#go').onclick = () => {
   if (lineStyle) fd.append('line_style', lineStyle);
   if (thin) fd.append('thin', thin);
   if (tracer) fd.append('tracer', tracer);
+  if (rsmooth) fd.append('region_smooth', rsmooth);
   if (+$('#printMm').value) { fd.append('print_mm', $('#printMm').value); fd.append('line_mm', $('#lineMm').value || '0.42'); }
   try { localStorage.setItem('lvec.print', JSON.stringify([$('#printMm').value, $('#lineMm').value])); } catch {}
   $('#go').disabled = true; showErr(''); $('#result').classList.remove('show');
@@ -370,7 +376,7 @@ function showResult(id, r) {
     ['颜色', r.colors], ['路径', (r.paths || 0).toLocaleString()],
     ['SVG', fmtBytes(r.bytes)], ['耗时', r.seconds + ' 秒'],
   ];
-  if (p.ink) stats.splice(4, 0, ['线条', p.lines === null ? '颜色规则' : (p.line_style === 'contour' || p.print_mm ? 'AI（旧）' : 'AI v3')]);
+  if (p.ink) stats.splice(4, 0, ['线条', p.lines === null ? '颜色规则' : (p.print_mm || p.line_style === 'contour' ? 'AI（旧）' : p.line_style === 'lens' ? 'AI 双曲线' : 'AI v3')]);
   if (p.fine) stats.splice(1, 0, ['模式', '精细']);
   if (p.print_mm) stats.splice(1, 0, ['打印', `${p.print_mm} mm · 线宽 ${p.line_mm}`]);
   $('#stats').innerHTML = stats.map(([k, v]) => `<div class="stat"><small>${k}</small><b>${v ?? '–'}</b></div>`).join('');
@@ -478,6 +484,7 @@ function esc(t) { return t.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':
 fetch('/healthz').then(r => r.json()).then(h => {
   $('#hdot').className = 'dot ' + (h.weights ? 'ok' : 'bad');
   $('#htext').textContent = h.weights ? '服务正常' : '缺少模型权重';
+  if (h.version) $('#ver').textContent = 'v' + h.version;
 }).catch(() => { $('#hdot').className = 'dot bad'; $('#htext').textContent = '服务不可用'; });
 loadHistory();
 </script>

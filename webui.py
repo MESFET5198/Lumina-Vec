@@ -3,6 +3,7 @@ from collections import OrderedDict
 from pathlib import Path
 from PIL import Image
 from flask import Flask, request, jsonify, send_file, abort
+from lumina_vec import __version__
 from lumina_vec.pipeline import PRESETS, auto_params, fine_params, grain_level, vectorize
 import cairosvg
 
@@ -112,7 +113,7 @@ def work(job, raw, preset, overrides, fine=False):
             colors = len(set(m.lower() for m in re.findall(r'fill="(#[0-9a-fA-F]{6})"', svg)))
             _set(job, status='done', progress=1.0, stage='完成', svg=f'/file/{job}.svg', png=f'/file/{job}.png', width=w, height=h,
                  paths=svg.count('<path'), colors=colors, bytes=svgpath.stat().st_size,
-                 seconds=round(secs, 1), preset=name, grain=round(grain, 2), params=params, finished=time.time())
+                 seconds=round(secs, 1), version=__version__, preset=name, grain=round(grain, 2), params=params, finished=time.time())
     except Exception as e:
         _set(job, status='error', error=str(e)[:500])
 
@@ -153,11 +154,14 @@ def process():
         overrides['ink'] = ink == '1'
     fine = request.form.get('fine', '').strip() == '1'
     ls = request.form.get('line_style', '').strip()
-    if ls in ('v3', 'contour'):
+    if ls in ('lens', 'v3', 'contour'):
         overrides['line_style'] = ls
     thin = request.form.get('thin', '').strip()
     if thin in ('0', '1'):
         overrides['thin_thr'] = 0.015 if thin == '1' else 0.0
+    rs = request.form.get('region_smooth', '').strip()
+    if rs in ('0', '1'):
+        overrides['region_smooth'] = rs == '1'
     tracer = request.form.get('tracer', '').strip()
     if tracer in ('contour', 'vtracer'):
         overrides['tracer'] = tracer
@@ -250,4 +254,4 @@ _load()
 
 @app.get('/healthz')
 def health():
-    return jsonify(status='ok', weights=WEIGHTS.is_file(), presets=['auto', *PRESETS])
+    return jsonify(status='ok', version=__version__, weights=WEIGHTS.is_file(), presets=['auto', *PRESETS])

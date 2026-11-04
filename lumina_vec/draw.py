@@ -504,3 +504,45 @@ def strokes_from_graph(P, cov=None, wmin=0.8, adaptive=True):
             free = [st["free"][0] if pi == 0 else False, st["free"][1] if pi == len(pieces) - 1 else False]
             out.append(dict(segs=[ctrl], pts=sm, w=w, free=free))
     return out
+
+
+def lens_layer(geo, M, A):
+    """Line layer v5 for the pipeline: centreline-graph strokes, each drawn as two cubic Beziers;
+    thick dark masses (lash roots etc.) as filled shapes. Returns (svg paths, cover mask)."""
+    from .strokes2 import line_prob, blob_mask
+    from .contour import field_paths
+    P = line_prob(M, A)
+    cov = ink_field(geo, P > 0.5)
+    blob = blob_mask(P, cov)
+    Pd = np.where(blob, 0, P)
+    st = strokes_from_graph(Pd, cov)
+    H, W = P.shape
+    cover = blob.astype(np.uint8).copy()
+    for s in st:
+        tang = np.gradient(s["pts"], axis=0); tang /= np.maximum(np.hypot(*tang.T), 1e-9)[:, None]
+        poly = outline(s["pts"], s["w"], tang, s.get("free", [True, True]))
+        cv2.fillPoly(cover, [np.round(poly * 16).astype(np.int32)], 1, lineType=cv2.LINE_8, shift=4)
+    out = []
+    lum = geo.astype(np.float32) @ np.array([0.299, 0.587, 0.114], np.float32)
+    n, cc = cv2.connectedComponents(blob.astype(np.uint8), connectivity=8)
+    for i in range(1, n):
+        m = cc == i
+        l = lum[m]; col = geo[m][l <= np.median(l)].mean(0)
+        tag = field_paths(np.where(m, np.maximum(cov, 0.6 * Pd), 0).astype(np.float32), m, col, ss=2, tol=0.4, min_area=4)
+        if tag:
+            out.append(tag)
+    # dots: small dark marks the model sees as line art but too short to be a stroke (beauty
+    # marks, pupils' dots, freckles) - drawn as small filled shapes so they are not lost
+    mask = (P > 0.5) & (cov > 0.4) & ~(cover > 0)
+    n, cc, stt, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
+    for i in range(1, n):
+        x, y, w_, h_, a = stt[i]
+        if a < 4 or a > 150 or max(w_, h_) > 3.5 * max(1, min(w_, h_)):
+            continue
+        m = cc == i
+        l = lum[m]; col = geo[m][l <= np.median(l)].mean(0)
+        tag = field_paths(np.where(m, np.maximum(cov, 0.6 * P), 0).astype(np.float32), m, col, ss=2, tol=0.3, min_area=2)
+        if tag:
+            out.append(tag); cover[m] = 1
+    out += lens_paths(st, geo)
+    return out, cover > 0
