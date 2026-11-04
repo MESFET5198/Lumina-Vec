@@ -26,31 +26,37 @@ def _rot(v, a):
     return np.array([c * v[0] - s * v[1], s * v[0] + c * v[1]])
 
 
-def _follow(R, p, d, thr=0.3, step=1.0, max_turn=np.radians(22), gap=5, max_len=2000):
-    """Walk along the ridge of R from p in direction d. Returns list of points (excl. p)."""
+def _follow(R, P, p, d, thr=0.22, step=1.0, max_turn=np.radians(22), gap=8, overlap=10, max_len=3000):
+    """Walk along a line from p in direction d. Steering uses the full sketch P (so a crossing
+    already drawn by another stroke does not stop the pen), continuation needs P >= thr
+    (lower than the start threshold), gaps up to `gap` px are bridged, and the walk stops once
+    it has run `overlap` px along a line that is already drawn (residual R empty)."""
     out = []
     angs = np.radians(np.arange(-22, 23, 5.5))
-    misses = 0
+    misses = 0; drawn = 0
     pend = []
     for _ in range(max_len):
-        # look 3 px ahead in a fan of directions; prefer straight (a pen keeps its direction)
         best, bd = -1, d
         for a in angs:
             nd = _rot(d, a)
             look = p + np.outer(np.arange(1, 4), nd) * step
-            v = _sample(R, look).mean() * (1 - 0.15 * abs(a) / max_turn)
+            v = (0.5 * _sample(P, look) + 0.5 * _sample(R, look)).mean() * (1 - 0.15 * abs(a) / max_turn)
             if v > best:
                 best, bd = v, nd
         q = p + bd * step
-        # re-centre on the ridge across the line (sub-pixel)
         nrm = np.array([-bd[1], bd[0]])
         offs = np.array([-1.5, -1, -0.5, 0, 0.5, 1, 1.5])
-        vals = _sample(R, q + np.outer(offs, nrm))
+        vals = _sample(P, q + np.outer(offs, nrm))
         if vals.max() > 0:
             q = q + nrm * offs[int(vals.argmax())] * 0.6
-        if _sample(R, q[None])[0] >= thr:
+        vp = _sample(P, q[None])[0]; vr = _sample(R, q[None])[0]
+        if vp >= thr:
             out.extend(pend); pend = []; misses = 0
             out.append(q)
+            drawn = drawn + 1 if vr < 0.1 else 0
+            if drawn > overlap:
+                out = out[:-overlap]
+                break
         else:
             misses += 1
             pend.append(q)
@@ -75,7 +81,7 @@ def _no_inflection(ctrl, rel=0.05):
     return not (np.any(k[big] > 0) and np.any(k[big] < 0))
 
 
-def simple_pieces(pts, tol_min=1.3, tol_rel=0.05, tol_max=3.0, min_len=4.0, depth=0):
+def simple_pieces(pts, tol_min=1.5, tol_rel=0.06, tol_max=4.0, min_len=4.0, depth=0, s_len=50.0):
     """Split a hand path into pieces that are each ONE straight line or ONE C-shaped cubic
     (no S-bends, no wiggles). A piece that does not fit is cut at its worst point, and both
     halves become separate strokes. Returns list of (ctrl 4x2, i0, i1) index ranges into pts."""
@@ -97,13 +103,15 @@ def simple_pieces(pts, tol_min=1.3, tol_rel=0.05, tol_max=3.0, min_len=4.0, dept
     for _ in range(6):
         u = _reparam(pts, ctrl, u); ctrl = _fit_one(pts, u, t1, t2)
     err, at = _max_err(pts, ctrl, u)
-    if err <= tol and _no_inflection(ctrl):
+    # one cubic: C-shaped always; a gentle S only on long strokes (long hair strands are S-shaped,
+    # cutting them read as polygons); short strokes never wiggle
+    if err <= tol and (_no_inflection(ctrl) or L >= s_len):
         return [(ctrl, 0, n - 1)]
     # cut at the worst point (or at the line's farthest point if the curve had an S)
     cut = at if err > tol else int(dline.argmax())
     cut = int(np.clip(cut, 2, n - 3))
-    left = simple_pieces(pts[:cut + 1], tol_min, tol_rel, tol_max, min_len, depth + 1)
-    right = simple_pieces(pts[cut:], tol_min, tol_rel, tol_max, min_len, depth + 1)
+    left = simple_pieces(pts[:cut + 1], tol_min, tol_rel, tol_max, min_len, depth + 1, s_len)
+    right = simple_pieces(pts[cut:], tol_min, tol_rel, tol_max, min_len, depth + 1, s_len)
     return left + [(c, i0 + cut, i1 + cut) for c, i0, i1 in right]
 
 
@@ -133,36 +141,71 @@ def bez_point(seg, t):
     return ((1 - t) ** 3) * seg[0] + 3 * ((1 - t) ** 2) * t * seg[1] + 3 * (1 - t) * t * t * seg[2] + t ** 3 * seg[3]
 
 
-def draw_strokes(P, cov, thr=0.5, min_len=3.0, fit_tol=0.9, max_strokes=6000, wscale=1.0, wmin=0.8,
-                 width_from=None):
+def _join_paths(paths, dist=8.0, cos_min=0.8):
+    """Join paths whose ends nearly meet and point at each other (one line drawn in pieces)."""
+    from scipy.spatial import cKDTree
+    def odir(pts, e):                      # outward direction at end e
+        k = min(6, len(pts) - 1)
+        return _unit(pts[0] - pts[k]) if e == 0 else _unit(pts[-1] - pts[-1 - k])
+    changed = True
+    while changed and len(paths) > 1:
+        changed = False
+        ends = [(i, e) for i in range(len(paths)) for e in (0, 1)]
+        P = np.array([paths[i][0 if e == 0 else -1] for i, e in ends])
+        pairs = sorted(cKDTree(P).query_pairs(dist), key=lambda ab: np.linalg.norm(P[ab[0]] - P[ab[1]]))
+        used = set()
+        for a, b in pairs:
+            (i, ei), (j, ej) = ends[a], ends[b]
+            if i == j or i in used or j in used:
+                continue
+            di, dj = odir(paths[i], ei), odir(paths[j], ej)
+            gap = P[b] - P[a]; gl = np.linalg.norm(gap)
+            if np.dot(di, dj) > -cos_min:
+                continue
+            if gl > 1e-6 and (np.dot(di, gap / gl) < cos_min * 0.9 or np.dot(dj, -gap / gl) < cos_min * 0.9):
+                continue
+            pi = paths[i] if ei == 1 else paths[i][::-1]
+            pj = paths[j] if ej == 0 else paths[j][::-1]
+            paths[i] = np.vstack([pi, pj]); paths[j] = None
+            used |= {i, j}; changed = True
+        paths = [p for p in paths if p is not None]
+    return paths
+
+
+def draw_strokes(P, cov, thr=0.5, min_len=3.0, max_strokes=8000, wscale=1.0, wmin=0.8, width_from=None):
     """P: line probability (0..1), cov: original's ink coverage. Returns list of strokes:
-    dict(segs=[4x2 cubic], w=(n,) widths along samples, pts=(n,2) samples, free=[True,True])."""
+    dict(segs=[4x2 cubic], w=(n,) widths, pts=(n,2) samples, free=[start,end])."""
     R = P.astype(np.float32).copy()
     H, W = R.shape
     Rs = cv2.GaussianBlur(R, (0, 0), 1.0)
-    strokes = []
+    paths = []
     for _ in range(max_strokes):
         y, x = np.unravel_index(np.argmax(Rs), Rs.shape)
         if Rs[y, x] < thr:
             break
-        p = np.array([x + 0.5, y + 0.5], float) - 0.5 + 0.5
         p = np.array([float(x), float(y)])
-        # initial direction: the one with most sketch along +-6 px
         t = np.arange(-6, 7)
         scores = [_sample(R, p + np.outer(t, d)).sum() for d in DIRS]
         d = DIRS[int(np.argmax(scores))]
-        fwd = _follow(R, p, d)
-        bwd = _follow(R, p, -d)
+        fwd = _follow(R, P, p, d); bwd = _follow(R, P, p, -d)
         pts = np.array(bwd[::-1] + [p] + fwd)
         L = np.hypot(*np.diff(pts, axis=0).T).sum() if len(pts) > 1 else 0
         if L < min_len:
-            # a dot / speck: erase it and move on
             cv2.circle(R, (int(x), int(y)), 2, 0, -1); cv2.circle(Rs, (int(x), int(y)), 3, 0, -1)
             continue
-        # smooth the hand path a little, then: only straight lines or single C-curves
+        paths.append(pts)
+        tang = np.gradient(pts, axis=0); tang /= np.maximum(np.hypot(*tang.T), 1e-9)[:, None]
+        w = np.maximum(_width_at(P, pts, tang), 1.0)
+        m = np.zeros((H, W), np.uint8)
+        cv2.fillPoly(m, [np.round(outline(pts, w + 1.5, tang, [False, False]) * 16).astype(np.int32)], 1,
+                     lineType=cv2.LINE_8, shift=4)
+        R[m > 0] = 0
+        Rs = np.where(cv2.dilate(m, np.ones((5, 5), np.uint8)) > 0, cv2.GaussianBlur(R, (0, 0), 1.0), Rs)
+    paths = _join_paths(paths)
+    strokes = []
+    for pts in paths:
         pts = ndi.gaussian_filter1d(pts, 3.0, axis=0, mode="nearest")
         pieces = simple_pieces(pts)
-        allpolys = []
         for pi, (ctrl, i0, i1) in enumerate(pieces):
             seglen = np.hypot(*np.diff(pts[i0:i1 + 1], axis=0).T).sum() if i1 > i0 else 0
             sm = bez_point(ctrl, np.linspace(0, 1, max(4, int(seglen * 2))))
@@ -170,16 +213,9 @@ def draw_strokes(P, cov, thr=0.5, min_len=3.0, fit_tol=0.9, max_strokes=6000, ws
             w = _width_at(P, sm, tang)
             if width_from is not None:
                 ink = _width_at(width_from, sm, tang)
-                w = np.where(ink > 0, np.minimum(w, np.maximum(ink, wmin)), w)
+                w = np.where(ink > 0, np.minimum(np.where(w > 0, w, ink), np.maximum(ink, wmin)), w)
             w = ndi.gaussian_filter1d(np.maximum(w, wmin) * wscale, 3, mode="nearest")
-            free = [pi == 0, pi == len(pieces) - 1]          # cut points join: no taper
-            strokes.append(dict(segs=[ctrl], pts=sm, w=w, free=free))
-            allpolys.append(outline(sm, w + 1.5, tang, [False, False]))
-        # erase what these strokes cover (a little wider: neighbouring pixels of the same line)
-        m = np.zeros((H, W), np.uint8)
-        cv2.fillPoly(m, [np.round(pp * 16).astype(np.int32) for pp in allpolys], 1, lineType=cv2.LINE_8, shift=4)
-        R[m > 0] = 0
-        Rs = np.where(cv2.dilate(m, np.ones((5, 5), np.uint8)) > 0, cv2.GaussianBlur(R, (0, 0), 1.0), Rs)
+            strokes.append(dict(segs=[ctrl], pts=sm, w=w, free=[pi == 0, pi == len(pieces) - 1], path=len(strokes)))
     return strokes
 
 
